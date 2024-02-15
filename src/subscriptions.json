@@ -1,0 +1,9 @@
+{
+    "subscriptions": [
+        {
+            "description": "Subscription to listen to extract load request",
+            "topic": "extract-load-request",
+            "subscription": "request-handler"
+        }
+    ]
+}
