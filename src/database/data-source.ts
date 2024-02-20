@@ -1,8 +1,7 @@
-import { Pool, QueryConfig, QueryResult, Submittable } from 'pg';
+import { Pool, QueryConfig, QueryResult } from 'pg';
 import { PostgresError } from '../constants/pg-error-constants';
 import { environment } from '../environment/environment';
 import UniqueKeyDbException, { ForeignKeyDbException } from '../exceptions/db/database-exceptions';
-import QueryStream from 'pg-query-stream';
 
 class DataSource {
     private pool: Pool = new Pool;
@@ -59,32 +58,6 @@ class DataSource {
                     break;
             }
 
-            throw e;
-        } finally {
-            client.release();
-        }
-    }
-
-    /**
-   * Async Query
-   * @param queryStream 
-   * @returns 
-   */
-    async queryStream(queryStream: QueryStream): Promise<QueryStream> {
-        const client = await this.pool.connect();
-        try {
-            const result = client.query(queryStream);
-            return result;
-        } catch (e: any) {
-
-            switch (e.code) {
-                case PostgresError.UNIQUE_VIOLATION:
-                    throw new UniqueKeyDbException("Duplicate");
-                case PostgresError.FOREIGN_KEY_VIOLATION:
-                    throw new ForeignKeyDbException(e.constraint);
-                default:
-                    break;
-            }
             throw e;
         } finally {
             client.release();

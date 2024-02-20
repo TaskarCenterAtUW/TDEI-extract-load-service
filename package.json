@@ -31,7 +31,6 @@
     "lodash": "^4.17.21",
     "nodets-ms-core": "^0.0.10",
     "pg": "^8.11.3",
-    "pg-query-stream": "^4.5.3",
     "rimraf": "^5.0.5"
   }
 }
