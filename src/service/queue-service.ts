@@ -2,6 +2,7 @@ import { QueueMessage } from "nodets-ms-core/lib/core/queue";
 import { QueueConfig } from "../model/queue-subscriptions-model";
 import { Topic } from "nodets-ms-core/lib/core/queue/topic";
 import { Core } from "nodets-ms-core";
+import extractLoadService from "./extract-load-service";
 
 export class QueueService {
 
@@ -51,7 +52,7 @@ export class QueueService {
      */
     private handleMessage = (message: QueueMessage) => {
         try {
-
+            extractLoadService.extractLoadRequestProcessor(message);
         } catch (error) {
             console.error("Error in handling incoming message", error);
         }

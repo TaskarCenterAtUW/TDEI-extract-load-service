@@ -8,16 +8,7 @@ dotenv.config();
 export const environment = {
     appName: process.env.npm_package_name,
     eventBus: {
-        connectionString: process.env.QUEUECONNECTION,
-        formatterTopic: process.env.FORMATTER_TOPIC,
-        dataServiceTopic: process.env.DATASVC_TOPIC,
-        validationSubscription: process.env.VALIDATION_SUBSCRIPTION,
-        uploadTopic: process.env.UPLOAD_TOPIC,
-        confidenceRequestTopic: process.env.CONF_REQ_TOPIC,
-        confidenceResponseTopic: process.env.CONF_RES_TOPIC,
-        confidenceResponseSubscription: process.env.CONF_RES_SUB,
-        formatterSubscription: process.env.FORMATTER_SUBSCRIPTION,
-        validationTopic: process.env.VALIDATION_TOPIC
+        extractLoadResponseTopic: process.env.EXTRACT_LOAD_RESPONSE_TOPIC
     },
     database: {
         username: process.env.POSTGRES_USER,
@@ -30,7 +21,4 @@ export const environment = {
     appPort: parseInt(process.env.PORT ?? "8080"),
     authPermissionUrl: process.env.AUTH_HOST + '/api/v1/hasPermission',
     secretGenerateUrl: process.env.AUTH_HOST + '/api/v1/generateSecret',
-    gatewayUrl: process.env.GATEWAY_URL,
-    serviceUrl: process.env.USER_MANAGEMENT_HOST + '/api/v1/service',
-    userProjectGroupRolesUrl: process.env.USER_MANAGEMENT_HOST + '/api/v1/project-group-roles'
 }
