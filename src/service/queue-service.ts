@@ -50,9 +50,9 @@ export class QueueService {
      * Handle the subscribed messages
      * @param message 
      */
-    private handleMessage = (message: QueueMessage) => {
+    private handleMessage = async (message: QueueMessage) => {
         try {
-            extractLoadService.extractLoadRequestProcessor(message);
+            await extractLoadService.extractLoadRequestProcessor(message);
         } catch (error) {
             console.error("Error in handling incoming message", error);
         }

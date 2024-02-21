@@ -87,6 +87,7 @@ export class ExtractLoadService {
 
     private async processOSWDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
         const tdei_dataset_id = message.messageId;
+        const user_id = message.data.user_id;
         const zip = new AdmZip(await Utility.stream2buffer(readStream));
         try {
             await dbClient.query('BEGIN');
@@ -96,11 +97,15 @@ export class ExtractLoadService {
                     if (entry.entryName.endsWith('.geojson')) {
                         const jsonData = JSON.parse(content);
                         if (entry.entryName.includes('nodes')) {
-                            this.bulkInsertNodes(tdei_dataset_id, jsonData);
+                            this.bulkInsertNodes(tdei_dataset_id, user_id, jsonData);
                         } else if (entry.entryName.includes('edges')) {
-                            this.bulkInsertEdges(tdei_dataset_id, jsonData);
+                            this.bulkInsertEdges(tdei_dataset_id, user_id, jsonData);
                         } else if (entry.entryName.includes('points')) {
-                            this.bulkInsertPoints(tdei_dataset_id, jsonData);
+                            this.bulkInsertPoints(tdei_dataset_id, user_id, jsonData);
+                        } else if (entry.entryName.includes('lines')) {
+                            this.bulkInsertLines(tdei_dataset_id, user_id, jsonData);
+                        } else if (entry.entryName.includes('polygons')) {
+                            this.bulkInsertPolygons(tdei_dataset_id, user_id, jsonData);
                         }
                     }
                 }
@@ -109,22 +114,22 @@ export class ExtractLoadService {
         } catch (error: any) {
             await dbClient.query('ROLLBACK');
             console.error('Error processing dataset:', error);
-            await this.publishMessage(message, false, error);
+            await this.publishMessage(message, false, 'Error processing dataset:' + error);
             return false;
         }
     }
 
-    private async bulkInsertEdges(tdei_dataset_id: string, jsonData: any) {
-        const batchSize = 1000;
+    private async bulkInsertEdges(tdei_dataset_id: string, user_id: string, jsonData: any) {
+        const batchSize = environment.bulkInsertSize;
         try {
             // Batch processing
             for (let i = 0; i < jsonData.features.length; i += batchSize) {
                 const batch = jsonData.features.slice(i, i + batchSize);
                 let counter = 1;
                 // Parameterized query
-                const values = batch.map((record: any) => [record.geometry, record.properties["@id"].replace("way/", ""), record]);
+                const values = batch.map((record: any) => [tdei_dataset_id, record, user_id]);
                 const query = `
-                    INSERT INTO edges (loc, orig_node_id, data)
+                    INSERT INTO edge (tdei_dataset_id, feature, requested_by)
                     VALUES ${values.map((_: any, index: number) => `($${counter++},$${counter++},$${counter++})`)
                         .join(', ')}
                 `;
@@ -132,20 +137,20 @@ export class ExtractLoadService {
                 await dbClient.query(query, values.flat());
             }
         } catch (error) {
-            console.error('Error inserting records:', error);
+            console.error('Error inserting edge records:', error);
         }
     }
-    private async bulkInsertNodes(tdei_dataset_id: string, jsonData: any) {
-        const batchSize = 1000;
+    private async bulkInsertNodes(tdei_dataset_id: string, user_id: string, jsonData: any) {
+        const batchSize = environment.bulkInsertSize;
         try {
             // Batch processing
             for (let i = 0; i < jsonData.features.length; i += batchSize) {
                 const batch = jsonData.features.slice(i, i + batchSize);
                 let counter = 1;
                 // Parameterized query
-                const values = batch.map((record: any) => [record.geometry, record.properties["@id"].replace("way/", ""), record]);
+                const values = batch.map((record: any) => [tdei_dataset_id, record, user_id]);
                 const query = `
-                    INSERT INTO edges (loc, orig_node_id, data)
+                    INSERT INTO node (tdei_dataset_id, feature, requested_by)
                     VALUES ${values.map((_: any, index: number) => `($${counter++},$${counter++},$${counter++})`)
                         .join(', ')}
                 `;
@@ -153,20 +158,20 @@ export class ExtractLoadService {
                 await dbClient.query(query, values.flat());
             }
         } catch (error) {
-            console.error('Error inserting records:', error);
+            console.error('Error inserting node records:', error);
         }
     }
-    private async bulkInsertPoints(tdei_dataset_id: string, jsonData: any) {
-        const batchSize = 1000;
+    private async bulkInsertPoints(tdei_dataset_id: string, user_id: string, jsonData: any) {
+        const batchSize = environment.bulkInsertSize;
         try {
             // Batch processing
             for (let i = 0; i < jsonData.features.length; i += batchSize) {
                 const batch = jsonData.features.slice(i, i + batchSize);
                 let counter = 1;
                 // Parameterized query
-                const values = batch.map((record: any) => [record.geometry, record.properties["@id"].replace("way/", ""), record]);
+                const values = batch.map((record: any) => [tdei_dataset_id, record, user_id]);
                 const query = `
-                    INSERT INTO edges (loc, orig_node_id, data)
+                    INSERT INTO extension_point (tdei_dataset_id, feature, requested_by)
                     VALUES ${values.map((_: any, index: number) => `($${counter++},$${counter++},$${counter++})`)
                         .join(', ')}
                 `;
@@ -174,7 +179,49 @@ export class ExtractLoadService {
                 await dbClient.query(query, values.flat());
             }
         } catch (error) {
-            console.error('Error inserting records:', error);
+            console.error('Error inserting extension_point records:', error);
+        }
+    }
+    private async bulkInsertPolygons(tdei_dataset_id: string, user_id: string, jsonData: any) {
+        const batchSize = environment.bulkInsertSize;
+        try {
+            // Batch processing
+            for (let i = 0; i < jsonData.features.length; i += batchSize) {
+                const batch = jsonData.features.slice(i, i + batchSize);
+                let counter = 1;
+                // Parameterized query
+                const values = batch.map((record: any) => [tdei_dataset_id, record, user_id]);
+                const query = `
+                    INSERT INTO extension_polygon (tdei_dataset_id, feature, requested_by)
+                    VALUES ${values.map((_: any, index: number) => `($${counter++},$${counter++},$${counter++})`)
+                        .join(', ')}
+                `;
+
+                await dbClient.query(query, values.flat());
+            }
+        } catch (error) {
+            console.error('Error inserting extension_polygon records:', error);
+        }
+    }
+    private async bulkInsertLines(tdei_dataset_id: string, user_id: string, jsonData: any) {
+        const batchSize = environment.bulkInsertSize;
+        try {
+            // Batch processing
+            for (let i = 0; i < jsonData.features.length; i += batchSize) {
+                const batch = jsonData.features.slice(i, i + batchSize);
+                let counter = 1;
+                // Parameterized query
+                const values = batch.map((record: any) => [tdei_dataset_id, record, user_id]);
+                const query = `
+                    INSERT INTO extension_line (tdei_dataset_id, feature, requested_by)
+                    VALUES ${values.map((_: any, index: number) => `($${counter++},$${counter++},$${counter++})`)
+                        .join(', ')}
+                `;
+
+                await dbClient.query(query, values.flat());
+            }
+        } catch (error) {
+            console.error('Error inserting extension_line records:', error);
         }
     }
     private async publishMessage(message: QueueMessage, success: boolean, resText: string) {
