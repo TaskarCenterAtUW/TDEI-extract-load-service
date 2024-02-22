@@ -3,7 +3,7 @@ import { PostgresError } from '../constants/pg-error-constants';
 import { environment } from '../environment/environment';
 import UniqueKeyDbException, { ForeignKeyDbException } from '../exceptions/db/database-exceptions';
 
-class DataSource {
+export class DataSource {
     private pool: Pool = new Pool;
 
     constructor() {

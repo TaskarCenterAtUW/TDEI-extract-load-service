@@ -101,7 +101,7 @@ export class ExtractLoadService {
      * @returns A promise that resolves to a boolean indicating the success of the process.
      * @throws An error if there is any issue with loading the data.
      */
-    private async processOSWDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
+    public async processOSWDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
         const tdei_dataset_id = message.messageId;
         const user_id = message.data.user_id;
         const zip = new AdmZip(await Utility.stream2buffer(readStream));
@@ -340,7 +340,7 @@ export class ExtractLoadService {
  * @param resText - The response message to be published.
  * @returns A Promise that resolves when the message is published successfully.
  */
-    private async publishMessage(message: QueueMessage, success: boolean, resText: string) {
+    public async publishMessage(message: QueueMessage, success: boolean, resText: string) {
         var data = {
             message: resText,
             success: success,

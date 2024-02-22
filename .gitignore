@@ -131,3 +131,4 @@ build
 .pnp.*
 
 .vscode
+test-report.html
