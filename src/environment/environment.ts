@@ -17,6 +17,7 @@ export const environment = {
         database: process.env.POSTGRES_DB,
         ssl: Boolean(process.env.SSL),
         port: parseInt(process.env.POSTGRES_PORT ?? "5432"),
+        max: parseInt(process.env.POSTGRES_POOL_SIZE ?? "20")
     },
     appPort: parseInt(process.env.PORT ?? "8080"),
     authPermissionUrl: process.env.AUTH_HOST + '/api/v1/hasPermission',

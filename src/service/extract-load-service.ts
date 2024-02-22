@@ -5,6 +5,7 @@ import AdmZip, { IZipEntry } from 'adm-zip';
 import { Utility } from "../utility/utility";
 import { environment } from "../environment/environment";
 import { PermissionRequest } from "nodets-ms-core/lib/core/auth/model/permission_request";
+import { PoolClient } from "pg";
 
 export class ExtractLoadRequest {
     tdei_project_group_id!: string;
@@ -87,41 +88,42 @@ export class ExtractLoadService {
         const user_id = message.data.user_id;
         const zip = new AdmZip(await Utility.stream2buffer(readStream));
         try {
-            await dbClient.query('BEGIN');
 
-            const promises = zip.getEntries().map((entry: IZipEntry) => {
-                if (!entry.isDirectory) {
-                    const content = entry.getData().toString('utf8');
-                    if (entry.entryName.endsWith('.geojson')) {
-                        const jsonData = JSON.parse(content);
-                        if (entry.entryName.includes('nodes')) {
-                            return this.bulkInsertNodes(tdei_dataset_id, user_id, jsonData);
-                        } else if (entry.entryName.includes('edges')) {
-                            return this.bulkInsertEdges(tdei_dataset_id, user_id, jsonData);
-                        } else if (entry.entryName.includes('points')) {
-                            return this.bulkInsertPoints(tdei_dataset_id, user_id, jsonData);
-                        } else if (entry.entryName.includes('lines')) {
-                            return this.bulkInsertLines(tdei_dataset_id, user_id, jsonData);
-                        } else if (entry.entryName.includes('polygons')) {
-                            return this.bulkInsertPolygons(tdei_dataset_id, user_id, jsonData);
+            await dbClient.runInTransaction(async (client) => {
+                // Execute multiple queries within the transactional scope 
+                const promises = zip.getEntries().map((entry: IZipEntry) => {
+                    if (!entry.isDirectory) {
+                        const content = entry.getData().toString('utf8');
+                        if (entry.entryName.endsWith('.geojson')) {
+                            const jsonData = JSON.parse(content);
+                            if (entry.entryName.includes('nodes')) {
+                                return this.bulkInsertNodes(client, tdei_dataset_id, user_id, jsonData);
+                            } else if (entry.entryName.includes('edges')) {
+                                return this.bulkInsertEdges(client, tdei_dataset_id, user_id, jsonData);
+                            } else if (entry.entryName.includes('points')) {
+                                return this.bulkInsertPoints(client, tdei_dataset_id, user_id, jsonData);
+                            } else if (entry.entryName.includes('lines')) {
+                                return this.bulkInsertLines(client, tdei_dataset_id, user_id, jsonData);
+                            } else if (entry.entryName.includes('polygons')) {
+                                return this.bulkInsertPolygons(client, tdei_dataset_id, user_id, jsonData);
+                            }
                         }
                     }
-                }
+                });
+                await Promise.all(promises);
             });
-
-            await Promise.all(promises);
 
             // All successful
             await this.publishMessage(message, true, "Data loaded successfully");
-            await dbClient.query('COMMIT');
+            console.log('Data loaded successfully');
         } catch (error) {
+            console.error('Error loading the data:', error);
             // If any of the promises fail, rollback the transaction
-            await dbClient.query('ROLLBACK');
             await this.publishMessage(message, false, "Error loading the data" + error);
         }
     }
 
-    private async bulkInsertEdges(tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
+    private async bulkInsertEdges(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
             // Batch processing
@@ -141,7 +143,7 @@ export class ExtractLoadService {
                     values: values
                 }
 
-                await dbClient.query(queryObject);
+                await dbClient.executeQuery(client, queryObject);
             }
             Promise.resolve(true);
         } catch (error) {
@@ -149,7 +151,7 @@ export class ExtractLoadService {
             throw new Error('Error inserting edge records:' + error);
         }
     }
-    private async bulkInsertNodes(tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
+    private async bulkInsertNodes(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
             // Batch processing
@@ -168,7 +170,7 @@ export class ExtractLoadService {
                     values: values
                 }
 
-                await dbClient.query(queryObject);
+                await dbClient.executeQuery(client, queryObject);
             }
             Promise.resolve(true);
         } catch (error) {
@@ -176,7 +178,7 @@ export class ExtractLoadService {
             throw new Error('Error inserting node records:' + error);
         }
     }
-    private async bulkInsertPoints(tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
+    private async bulkInsertPoints(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
             // Batch processing
@@ -195,7 +197,7 @@ export class ExtractLoadService {
                     values: values
                 }
 
-                await dbClient.query(queryObject);
+                await dbClient.executeQuery(client, queryObject);
             }
             Promise.resolve(true);
         } catch (error) {
@@ -203,7 +205,7 @@ export class ExtractLoadService {
             throw new Error('Error inserting extension_point records:' + error);
         }
     }
-    private async bulkInsertPolygons(tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
+    private async bulkInsertPolygons(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
             // Batch processing
@@ -222,7 +224,7 @@ export class ExtractLoadService {
                     values: values
                 }
 
-                await dbClient.query(queryObject);
+                await dbClient.executeQuery(client, queryObject);
             }
             Promise.resolve(true);
         } catch (error) {
@@ -230,7 +232,7 @@ export class ExtractLoadService {
             throw new Error('Error inserting extension_polygon records:' + error);
         }
     }
-    private async bulkInsertLines(tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
+    private async bulkInsertLines(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
             // Batch processing
@@ -249,7 +251,7 @@ export class ExtractLoadService {
                     values: values
                 }
 
-                await dbClient.query(queryObject);
+                await dbClient.executeQuery(client, queryObject);
             }
             Promise.resolve(true);
         } catch (error) {
