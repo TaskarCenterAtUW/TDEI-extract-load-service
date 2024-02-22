@@ -7,6 +7,7 @@ import { environment } from "../environment/environment";
 import { PermissionRequest } from "nodets-ms-core/lib/core/auth/model/permission_request";
 import { PoolClient } from "pg";
 
+
 export class ExtractLoadRequest {
     tdei_project_group_id!: string;
     data_type!: string;
@@ -21,10 +22,18 @@ export interface IExtractLoadRequest {
     extractLoadRequestProcessor(message: QueueMessage): Promise<boolean>;
 }
 
-
+/**
+ * Represents a service for processing extract and load requests.
+ */
 export class ExtractLoadService {
     constructor() { }
 
+    /**
+ * Processes the extract and load request.
+ * 
+ * @param message - The queue message containing the extract load request.
+ * @returns A promise that resolves to a boolean indicating the success of the process.
+ */
     public async extractLoadRequestProcessor(message: QueueMessage): Promise<boolean> {
         const extractLoadRequest = message.data as ExtractLoadRequest;
         const fileUploadPath = extractLoadRequest.file_upload_path;
@@ -76,6 +85,7 @@ export class ExtractLoadService {
 
         return true;
     }
+
     private async processPathwaysDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
         throw new Error("Method not implemented.");
     }
@@ -83,6 +93,14 @@ export class ExtractLoadService {
         throw new Error("Method not implemented.");
     }
 
+    /**
+     * Process the OSW dataset.
+     * 
+     * @param message - The queue message containing the dataset information.
+     * @param readStream - The readable stream of the dataset file.
+     * @returns A promise that resolves to a boolean indicating the success of the process.
+     * @throws An error if there is any issue with loading the data.
+     */
     private async processOSWDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
         const tdei_dataset_id = message.messageId;
         const user_id = message.data.user_id;
@@ -123,6 +141,16 @@ export class ExtractLoadService {
         }
     }
 
+    /**
+ * Inserts a batch of edge records into the 'content.edge' table.
+ * 
+ * @param client - The database client used to execute the query.
+ * @param tdei_dataset_id - The ID of the dataset.
+ * @param user_id - The ID of the user who requested the insertion.
+ * @param jsonData - The JSON data containing the edge records.
+ * @returns A Promise that resolves to void.
+ * @throws An error if there is an issue inserting the edge records.
+ */
     private async bulkInsertEdges(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
@@ -151,6 +179,17 @@ export class ExtractLoadService {
             throw new Error('Error inserting edge records:' + error);
         }
     }
+
+    /**
+ * Inserts a batch of node records into the 'content.node' table.
+ * 
+ * @param client - The database client used to execute the query.
+ * @param tdei_dataset_id - The ID of the dataset.
+ * @param user_id - The ID of the user who requested the insertion.
+ * @param jsonData - The JSON data containing the node records.
+ * @returns A Promise that resolves to void.
+ * @throws An error if there is an issue inserting the node records.
+ */
     private async bulkInsertNodes(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
@@ -178,6 +217,17 @@ export class ExtractLoadService {
             throw new Error('Error inserting node records:' + error);
         }
     }
+
+    /**
+ * Inserts a batch of points into the 'content.extension_point' table.
+ * 
+ * @param client - The database client used to execute the query.
+ * @param tdei_dataset_id - The ID of the dataset.
+ * @param user_id - The ID of the user who requested the insertion.
+ * @param jsonData - The JSON data containing the points to be inserted.
+ * @returns A Promise that resolves to void.
+ * @throws An error if there is an issue inserting the points.
+ */
     private async bulkInsertPoints(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
@@ -205,6 +255,17 @@ export class ExtractLoadService {
             throw new Error('Error inserting extension_point records:' + error);
         }
     }
+
+    /**
+ * Inserts polygon records into the 'content.extension_polygon' table.
+ * 
+ * @param client - The database client used to execute the query.
+ * @param tdei_dataset_id - The ID of the dataset.
+ * @param user_id - The ID of the user who requested the insertion.
+ * @param jsonData - The JSON data containing the polygon features to be inserted.
+ * @returns A Promise that resolves to void.
+ * @throws An error if there is an issue inserting the records.
+ */
     private async bulkInsertPolygons(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
@@ -232,6 +293,17 @@ export class ExtractLoadService {
             throw new Error('Error inserting extension_polygon records:' + error);
         }
     }
+
+    /**
+ * Inserts a batch of extension line records into the 'content.extension_line' table.
+ * 
+ * @param client - The database client used to execute the query.
+ * @param tdei_dataset_id - The ID of the TDEI dataset.
+ * @param user_id - The ID of the user who requested the insertion.
+ * @param jsonData - The JSON data containing the extension line records.
+ * @returns A Promise that resolves to void.
+ * @throws Error if there is an error inserting the extension line records.
+ */
     private async bulkInsertLines(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
@@ -259,6 +331,15 @@ export class ExtractLoadService {
             throw new Error('Error inserting extension_line records:' + error);
         }
     }
+
+    /**
+ * Publishes a message to the extractLoadResponseTopic topic.
+ * 
+ * @param message - The original QueueMessage object.
+ * @param success - A boolean indicating the success status of the message.
+ * @param resText - The response message to be published.
+ * @returns A Promise that resolves when the message is published successfully.
+ */
     private async publishMessage(message: QueueMessage, success: boolean, resText: string) {
         var data = {
             message: resText,
