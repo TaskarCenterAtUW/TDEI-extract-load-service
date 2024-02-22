@@ -13,7 +13,7 @@ export class QueueService {
 
     initializeQueue() {
         console.log('Queue initialized');
-        this.queueConfig = new QueueConfig(this.config.queueConfig);
+        this.queueConfig = new QueueConfig(this.config);
         this.subscribe();
     }
 

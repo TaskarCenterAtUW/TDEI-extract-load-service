@@ -1,7 +1,7 @@
 import { QueueMessage } from "nodets-ms-core/lib/core/queue";
 import dbClient from "../database/data-source";
 import { Core } from "nodets-ms-core";
-import AdmZip from 'adm-zip';
+import AdmZip, { IZipEntry } from 'adm-zip';
 import { Utility } from "../utility/utility";
 import { environment } from "../environment/environment";
 import { PermissionRequest } from "nodets-ms-core/lib/core/auth/model/permission_request";
@@ -73,9 +73,6 @@ export class ExtractLoadService {
                 break;
         }
 
-        //All successful
-        await this.publishMessage(message, true, "Data loaded successfully");
-
         return true;
     }
     private async processPathwaysDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
@@ -91,56 +88,68 @@ export class ExtractLoadService {
         const zip = new AdmZip(await Utility.stream2buffer(readStream));
         try {
             await dbClient.query('BEGIN');
-            zip.forEach(entry => {
+
+            const promises = zip.getEntries().map((entry: IZipEntry) => {
                 if (!entry.isDirectory) {
                     const content = entry.getData().toString('utf8');
                     if (entry.entryName.endsWith('.geojson')) {
                         const jsonData = JSON.parse(content);
                         if (entry.entryName.includes('nodes')) {
-                            this.bulkInsertNodes(tdei_dataset_id, user_id, jsonData);
+                            return this.bulkInsertNodes(tdei_dataset_id, user_id, jsonData);
                         } else if (entry.entryName.includes('edges')) {
-                            this.bulkInsertEdges(tdei_dataset_id, user_id, jsonData);
+                            return this.bulkInsertEdges(tdei_dataset_id, user_id, jsonData);
                         } else if (entry.entryName.includes('points')) {
-                            this.bulkInsertPoints(tdei_dataset_id, user_id, jsonData);
+                            return this.bulkInsertPoints(tdei_dataset_id, user_id, jsonData);
                         } else if (entry.entryName.includes('lines')) {
-                            this.bulkInsertLines(tdei_dataset_id, user_id, jsonData);
+                            return this.bulkInsertLines(tdei_dataset_id, user_id, jsonData);
                         } else if (entry.entryName.includes('polygons')) {
-                            this.bulkInsertPolygons(tdei_dataset_id, user_id, jsonData);
+                            return this.bulkInsertPolygons(tdei_dataset_id, user_id, jsonData);
                         }
                     }
                 }
             });
+
+            await Promise.all(promises);
+
+            // All successful
+            await this.publishMessage(message, true, "Data loaded successfully");
             await dbClient.query('COMMIT');
-        } catch (error: any) {
+        } catch (error) {
+            // If any of the promises fail, rollback the transaction
             await dbClient.query('ROLLBACK');
-            console.error('Error processing dataset:', error);
-            await this.publishMessage(message, false, 'Error processing dataset:' + error);
-            return false;
+            await this.publishMessage(message, false, "Error loading the data" + error);
         }
     }
 
-    private async bulkInsertEdges(tdei_dataset_id: string, user_id: string, jsonData: any) {
+    private async bulkInsertEdges(tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
             // Batch processing
             for (let i = 0; i < jsonData.features.length; i += batchSize) {
                 const batch = jsonData.features.slice(i, i + batchSize);
                 let counter = 1;
-                // Parameterized query
-                const values = batch.map((record: any) => [tdei_dataset_id, record, user_id]);
-                const query = `
-                    INSERT INTO edge (tdei_dataset_id, feature, requested_by)
-                    VALUES ${values.map((_: any, index: number) => `($${counter++},$${counter++},$${counter++})`)
-                        .join(', ')}
-                `;
 
-                await dbClient.query(query, values.flat());
+                // Parameterized query
+                const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
+                const placeholders = batch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
+
+                const queryObject = {
+                    text: `
+                    INSERT INTO content.edge (tdei_dataset_id, feature, requested_by)
+                    VALUES ${placeholders}
+                `,
+                    values: values
+                }
+
+                await dbClient.query(queryObject);
             }
+            Promise.resolve(true);
         } catch (error) {
             console.error('Error inserting edge records:', error);
+            throw new Error('Error inserting edge records:' + error);
         }
     }
-    private async bulkInsertNodes(tdei_dataset_id: string, user_id: string, jsonData: any) {
+    private async bulkInsertNodes(tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
             // Batch processing
@@ -148,20 +157,26 @@ export class ExtractLoadService {
                 const batch = jsonData.features.slice(i, i + batchSize);
                 let counter = 1;
                 // Parameterized query
-                const values = batch.map((record: any) => [tdei_dataset_id, record, user_id]);
-                const query = `
-                    INSERT INTO node (tdei_dataset_id, feature, requested_by)
-                    VALUES ${values.map((_: any, index: number) => `($${counter++},$${counter++},$${counter++})`)
-                        .join(', ')}
-                `;
+                const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
+                const placeholders = batch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
 
-                await dbClient.query(query, values.flat());
+                const queryObject = {
+                    text: `
+                     INSERT INTO content.node (tdei_dataset_id, feature, requested_by)
+                     VALUES ${placeholders}
+                 `,
+                    values: values
+                }
+
+                await dbClient.query(queryObject);
             }
+            Promise.resolve(true);
         } catch (error) {
             console.error('Error inserting node records:', error);
+            throw new Error('Error inserting node records:' + error);
         }
     }
-    private async bulkInsertPoints(tdei_dataset_id: string, user_id: string, jsonData: any) {
+    private async bulkInsertPoints(tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
             // Batch processing
@@ -169,20 +184,26 @@ export class ExtractLoadService {
                 const batch = jsonData.features.slice(i, i + batchSize);
                 let counter = 1;
                 // Parameterized query
-                const values = batch.map((record: any) => [tdei_dataset_id, record, user_id]);
-                const query = `
-                    INSERT INTO extension_point (tdei_dataset_id, feature, requested_by)
-                    VALUES ${values.map((_: any, index: number) => `($${counter++},$${counter++},$${counter++})`)
-                        .join(', ')}
-                `;
+                const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
+                const placeholders = batch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
 
-                await dbClient.query(query, values.flat());
+                const queryObject = {
+                    text: `
+                     INSERT INTO content.extension_point (tdei_dataset_id, feature, requested_by)
+                     VALUES ${placeholders}
+                 `,
+                    values: values
+                }
+
+                await dbClient.query(queryObject);
             }
+            Promise.resolve(true);
         } catch (error) {
             console.error('Error inserting extension_point records:', error);
+            throw new Error('Error inserting extension_point records:' + error);
         }
     }
-    private async bulkInsertPolygons(tdei_dataset_id: string, user_id: string, jsonData: any) {
+    private async bulkInsertPolygons(tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
             // Batch processing
@@ -190,20 +211,26 @@ export class ExtractLoadService {
                 const batch = jsonData.features.slice(i, i + batchSize);
                 let counter = 1;
                 // Parameterized query
-                const values = batch.map((record: any) => [tdei_dataset_id, record, user_id]);
-                const query = `
-                    INSERT INTO extension_polygon (tdei_dataset_id, feature, requested_by)
-                    VALUES ${values.map((_: any, index: number) => `($${counter++},$${counter++},$${counter++})`)
-                        .join(', ')}
-                `;
+                const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
+                const placeholders = batch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
 
-                await dbClient.query(query, values.flat());
+                const queryObject = {
+                    text: `
+                    INSERT INTO content.extension_polygon (tdei_dataset_id, feature, requested_by)
+                    VALUES ${placeholders}
+                `,
+                    values: values
+                }
+
+                await dbClient.query(queryObject);
             }
+            Promise.resolve(true);
         } catch (error) {
             console.error('Error inserting extension_polygon records:', error);
+            throw new Error('Error inserting extension_polygon records:' + error);
         }
     }
-    private async bulkInsertLines(tdei_dataset_id: string, user_id: string, jsonData: any) {
+    private async bulkInsertLines(tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
             // Batch processing
@@ -211,17 +238,23 @@ export class ExtractLoadService {
                 const batch = jsonData.features.slice(i, i + batchSize);
                 let counter = 1;
                 // Parameterized query
-                const values = batch.map((record: any) => [tdei_dataset_id, record, user_id]);
-                const query = `
-                    INSERT INTO extension_line (tdei_dataset_id, feature, requested_by)
-                    VALUES ${values.map((_: any, index: number) => `($${counter++},$${counter++},$${counter++})`)
-                        .join(', ')}
-                `;
+                const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
+                const placeholders = batch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
 
-                await dbClient.query(query, values.flat());
+                const queryObject = {
+                    text: `
+                     INSERT INTO content.extension_line (tdei_dataset_id, feature, requested_by)
+                     VALUES ${placeholders}
+                 `,
+                    values: values
+                }
+
+                await dbClient.query(queryObject);
             }
+            Promise.resolve(true);
         } catch (error) {
             console.error('Error inserting extension_line records:', error);
+            throw new Error('Error inserting extension_line records:' + error);
         }
     }
     private async publishMessage(message: QueueMessage, success: boolean, resText: string) {
