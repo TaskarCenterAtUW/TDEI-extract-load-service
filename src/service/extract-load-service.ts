@@ -105,6 +105,7 @@ export class ExtractLoadService {
         const tdei_dataset_id = message.messageId;
         const user_id = message.data.user_id;
         const zip = new AdmZip(await Utility.stream2buffer(readStream));
+
         try {
 
             await dbClient.runInTransaction(async (client) => {
