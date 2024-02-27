@@ -5,13 +5,11 @@ TDEI extract load service to unzip the dataset files and load the records to the
 
 ```json
 {
-    "messageId": "tdei_dataset_id",
+    "messageId": "tdei_dataset_id|job_id",
     "messageType": "workflow_identifier",
     "data": {
       "data_type":"osw|flex|pathways",
-      "file_upload_path" : "file path",
-      "user_id": "user_id",
-      "tdei_project_group_id": "tdei_project_group_id"
+      "file_upload_path" : "file path"
     } 
   }
 ```
@@ -20,11 +18,9 @@ TDEI extract load service to unzip the dataset files and load the records to the
 
 ```json
 {
-    "messageId": "tdei_dataset_id",
+    "messageId": "tdei_dataset_id|job_id",
     "messageType": "workflow_identifier",
     "data": {
-      "data_type":"osw|flex|pathways",
-      "file_upload_path" : "file path",
       "success": true|false,
       "message": "message" // if false the error string else empty string
     } 

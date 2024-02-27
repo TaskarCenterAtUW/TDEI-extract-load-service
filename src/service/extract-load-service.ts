@@ -9,10 +9,10 @@ import { PoolClient } from "pg";
 
 
 export class ExtractLoadRequest {
-    tdei_project_group_id!: string;
+    // user_id!: string;
+    // tdei_project_group_id!: string;
     data_type!: string;
     file_upload_path!: string;
-    user_id!: string;
     constructor(init: Partial<ExtractLoadRequest>) {
         Object.assign(this, init);
     }
@@ -37,35 +37,8 @@ export class ExtractLoadService {
     public async extractLoadRequestProcessor(message: QueueMessage): Promise<boolean> {
         const extractLoadRequest = message.data as ExtractLoadRequest;
         const fileUploadPath = extractLoadRequest.file_upload_path;
-        const user_id = extractLoadRequest.user_id;
         const data_type = extractLoadRequest.data_type;
-        const tdei_project_group_id = extractLoadRequest.tdei_project_group_id;
-
-        const allowedRoles: { [key: string]: string[] } = {
-            "osw": ["tdei_admin", "poc", "osw_data_generator"],
-            "flex": ["tdei_admin", "poc", "flex_data_generator"],
-            "pathways": ["tdei_admin", "poc", "pathways_data_generator"]
-        }
-        //validate the inputs
-        if (!["osw", "flex", "pathways"].includes(data_type)) {
-            await this.publishMessage(message, false, "Invalid data type");
-            return false;
-        }
-
-        //authorize the user
-        const authProvider = Core.getAuthorizer({ provider: "Hosted", apiUrl: environment.authPermissionUrl });
-        const permissionRequest = new PermissionRequest({
-            userId: user_id as string,
-            projectGroupId: tdei_project_group_id,
-            permssions: allowedRoles[data_type],
-            shouldSatisfyAll: false
-        });
-
-        const response = await authProvider?.hasPermission(permissionRequest);
-        if (!response) {
-            await this.publishMessage(message, false, "Unauthorized user");
-            return false;
-        }
+        
 
         const storageClient = Core.getStorageClient();
         const fileEntity = await storageClient!.getFileFromUrl(fileUploadPath);
