@@ -78,6 +78,7 @@ export class ExtractLoadService {
     public async processOSWDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
         const tdei_dataset_id = message.data.tdei_dataset_id;
         const user_id = message.data.user_id;
+        console.log('Processing OSW dataset:', tdei_dataset_id);
         const zip = new AdmZip(await Utility.stream2buffer(readStream));
 
         try {
