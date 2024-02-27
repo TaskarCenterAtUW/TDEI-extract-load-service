@@ -89,7 +89,13 @@ export class ExtractLoadService {
                     if (!entry.isDirectory) {
                         const content = entry.getData().toString('utf8');
                         if (entry.entryName.endsWith('.geojson')) {
-                            const jsonData = JSON.parse(content);
+                            let jsonData;
+                            try {
+                                jsonData = JSON.parse(content);
+                            } catch (error) {
+                                console.error("Unable to parse content as JSON:", content);
+                                return;
+                            }
                             if (entry.entryName.includes('nodes')) {
                                 return this.bulkInsertNodes(client, tdei_dataset_id, user_id, jsonData);
                             } else if (entry.entryName.includes('edges')) {
