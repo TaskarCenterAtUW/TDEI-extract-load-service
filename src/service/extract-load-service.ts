@@ -136,6 +136,10 @@ export class ExtractLoadService {
     private async bulkInsertEdges(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
+            const col_name = "event_info";
+            //store additional information
+            await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
+
             // Batch processing
             for (let i = 0; i < jsonData.features.length; i += batchSize) {
                 const batch = jsonData.features.slice(i, i + batchSize);
@@ -162,6 +166,27 @@ export class ExtractLoadService {
         }
     }
 
+    private async updateAdditionalFileData(jsonData: any, col_name: string, tdei_dataset_id: string, client: PoolClient) {
+
+        const keysToIgnore = ['features', 'type'];
+        const additionalInfo: { [key: string]: any } = {};
+        Object.entries(jsonData).forEach(([key, value]) => {
+            if (!keysToIgnore.includes(key)) {
+                additionalInfo[key] = value ?? '';
+            }
+        });
+
+        //Insert into the dataset table
+        const queryObject = {
+            text: `
+                UPDATE content.dataset SET ${col_name}=$1  WHERE tdei_dataset_id = $2
+            `,
+            values: [additionalInfo, tdei_dataset_id]
+        };
+
+        await dbClient.executeQuery(client, queryObject);
+    }
+
     /**
  * Inserts a batch of node records into the 'content.node' table.
  * 
@@ -175,6 +200,9 @@ export class ExtractLoadService {
     private async bulkInsertNodes(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
+            const col_name = "node_info";
+            //store additional information
+            await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
             // Batch processing
             for (let i = 0; i < jsonData.features.length; i += batchSize) {
                 const batch = jsonData.features.slice(i, i + batchSize);
@@ -213,6 +241,9 @@ export class ExtractLoadService {
     private async bulkInsertPoints(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
+            const col_name = "ext_point_info";
+            //store additional information
+            await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
             // Batch processing
             for (let i = 0; i < jsonData.features.length; i += batchSize) {
                 const batch = jsonData.features.slice(i, i + batchSize);
@@ -251,6 +282,9 @@ export class ExtractLoadService {
     private async bulkInsertPolygons(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
+            const col_name = "ext_polygon_info";
+            //store additional information
+            await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
             // Batch processing
             for (let i = 0; i < jsonData.features.length; i += batchSize) {
                 const batch = jsonData.features.slice(i, i + batchSize);
@@ -289,6 +323,9 @@ export class ExtractLoadService {
     private async bulkInsertLines(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
+            const col_name = "ext_line_info";
+            //store additional information
+            await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
             // Batch processing
             for (let i = 0; i < jsonData.features.length; i += batchSize) {
                 const batch = jsonData.features.slice(i, i + batchSize);
