@@ -344,9 +344,7 @@ export class ExtractLoadService {
     public async publishMessage(message: QueueMessage, success: boolean, resText: string) {
         var data = {
             message: resText,
-            success: success,
-            data_type: message.data.data_type,
-            file_upload_path: message.data.file_upload_path
+            success: success
         }
         message.data = data;
         await Core.getTopic(environment.eventBus.extractLoadResponseTopic as string).publish(message);
