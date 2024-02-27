@@ -9,7 +9,8 @@ TDEI extract load service to unzip the dataset files and load the records to the
     "messageType": "workflow_identifier",
     "data": {
       "data_type":"osw|flex|pathways",
-      "file_upload_path" : "file path"
+      "file_upload_path" : "file path",
+      "tdei_dataset_id" : "tdei_dataset_id"
     } 
   }
 ```

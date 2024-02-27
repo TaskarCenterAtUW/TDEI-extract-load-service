@@ -12,6 +12,7 @@ export class ExtractLoadRequest {
     // user_id!: string;
     // tdei_project_group_id!: string;
     data_type!: string;
+    tdei_dataset_id!: string;
     file_upload_path!: string;
     constructor(init: Partial<ExtractLoadRequest>) {
         Object.assign(this, init);
@@ -38,7 +39,7 @@ export class ExtractLoadService {
         const extractLoadRequest = message.data as ExtractLoadRequest;
         const fileUploadPath = extractLoadRequest.file_upload_path;
         const data_type = extractLoadRequest.data_type;
-        
+
 
         const storageClient = Core.getStorageClient();
         const fileEntity = await storageClient!.getFileFromUrl(fileUploadPath);
@@ -75,7 +76,7 @@ export class ExtractLoadService {
      * @throws An error if there is any issue with loading the data.
      */
     public async processOSWDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
-        const tdei_dataset_id = message.messageId;
+        const tdei_dataset_id = message.data.tdei_dataset_id;
         const user_id = message.data.user_id;
         const zip = new AdmZip(await Utility.stream2buffer(readStream));
 
