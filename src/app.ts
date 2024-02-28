@@ -54,7 +54,7 @@ class App {
     }
 
     private initializeControllers(controllers: IController[]) {
-        this.app.use("/", processMiddleware);
+        //this.app.use("/", processMiddleware);
         controllers.forEach((controller) => {
             this.app.use(controller.router);
         });
