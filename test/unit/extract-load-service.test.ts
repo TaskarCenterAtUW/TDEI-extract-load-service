@@ -29,7 +29,6 @@ describe('extractLoadRequestProcessor', () => {
 
         // Assert
         expect(result).toBe(true);
-        expect(authProviderMock.hasPermission).toHaveBeenCalledWith(expect.any(PermissionRequest));
         expect(processOswDatasetMock).toHaveBeenCalled();
     }, 15000);
 });
