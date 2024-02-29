@@ -82,6 +82,24 @@ export class ExtractLoadService {
         const zip = new AdmZip(await Utility.stream2buffer(readStream));
 
         try {
+            const checkRecordsQueryObject = {
+                text: `SELECT id  
+                    from content.edge 
+                    WHERE 
+                    tdei_dataset_id = $1 LIMIT 1`.replace(/\n/g, ""),
+                values: [tdei_dataset_id]
+            };
+
+            // Check if there is a record with the same date
+            const queryResult = await dbClient.query(checkRecordsQueryObject);
+            if (queryResult.rowCount && queryResult.rowCount > 0) {
+                console.log('Deleting existing records' + tdei_dataset_id);
+                const deleteRecordsQueryObject = {
+                    text: `SELECT delete_dataset_records_by_id($1)`.replace(/\n/g, ""),
+                    values: [tdei_dataset_id]
+                };
+                await dbClient.query(deleteRecordsQueryObject);
+            }
 
             await dbClient.runInTransaction(async (client) => {
                 // Execute multiple queries within the transactional scope 
