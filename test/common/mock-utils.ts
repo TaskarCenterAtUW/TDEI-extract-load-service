@@ -1,10 +1,30 @@
+import AdmZip from "adm-zip";
 import { Core } from "nodets-ms-core"
 import { IAuthorizer } from "nodets-ms-core/lib/core/auth/abstracts/IAuthorizer";
 import { Topic } from "nodets-ms-core/lib/core/queue/topic";
 import { FileEntity, StorageClient, StorageContainer } from "nodets-ms-core/lib/core/storage"
 import { Readable } from "stream"
 
+export function getMockZipFileStream() {
+    // Create a new AdmZip instance
+    const zip = new AdmZip();
 
+    // Add files to the zip
+    zip.addFile('edges.geojson', Buffer.from('{ "features": [ { "type": "Feature", "properties": { "id": 1 }, "geometry": { "type": "LineString", "coordinates": [ [ 0, 0 ], [ 1, 1 ] ] } } ], "type": "FeatureCollection"}'));
+    zip.addFile('nodes.geojson', Buffer.from('{ "features": [ { "type": "Feature", "properties": { "id": 1 }, "geometry": { "type": "Point", "coordinates": [ 0, 0 ] } } ], "type": "FeatureCollection"}'));
+    zip.addFile('points.geojson', Buffer.from('{ "features": [ { "type": "Feature", "properties": { "id": 1 }, "geometry": { "type": "Point", "coordinates": [ 0, 0 ] } } ], "type": "FeatureCollection"}'));
+    zip.addFile('lines.geojson', Buffer.from('{ "features": [ { "type": "Feature", "properties": { "id": 1 }, "geometry": { "type": "LineString", "coordinates": [ [ 0, 0 ], [ 1, 1 ] ] } } ], "type": "FeatureCollection"}'));
+    zip.addFile('polygons.geojson', Buffer.from('{ "features": [ { "type": "Feature", "properties": { "id": 1 }, "geometry": { "type": "Polygon", "coordinates": [ [ [ 0, 0 ], [ 1, 1 ], [ 1, 0 ], [ 0, 0 ] ] ] } } ], "type": "FeatureCollection"}'));
+
+    // Get the zip file as a buffer
+    const zipBuffer = zip.toBuffer();
+
+    // Create a new readable stream from the buffer
+    let mockedStream = new Readable();
+    mockedStream.push(zipBuffer);
+    mockedStream.push(null); // Indicates end of file
+    return mockedStream;
+}
 export function getMockFileEntity() {
     const fileEntity: FileEntity = {
         fileName: "test_file_name",
@@ -83,6 +103,6 @@ export function mockCore() {
     jest.spyOn(Core, "initialize");
     jest.spyOn(Core, "getStorageClient").mockImplementation(() => { return getMockStorageClient(); });
     jest.spyOn(Core, "getTopic").mockImplementation(() => { return getMockTopic(); });
-   
+
 
 }

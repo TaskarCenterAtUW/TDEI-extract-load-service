@@ -4,13 +4,10 @@ import { Core } from "nodets-ms-core";
 import AdmZip, { IZipEntry } from 'adm-zip';
 import { Utility } from "../utility/utility";
 import { environment } from "../environment/environment";
-import { PermissionRequest } from "nodets-ms-core/lib/core/auth/model/permission_request";
 import { PoolClient } from "pg";
 
 
 export class ExtractLoadRequest {
-    // user_id!: string;
-    // tdei_project_group_id!: string;
     data_type!: string;
     tdei_dataset_id!: string;
     file_upload_path!: string;
@@ -60,10 +57,10 @@ export class ExtractLoadService {
         return true;
     }
 
-    private async processPathwaysDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
+    public async processPathwaysDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
         throw new Error("Method not implemented.");
     }
-    private async processFlexDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
+    public async processFlexDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
         throw new Error("Method not implemented.");
     }
 
@@ -139,7 +136,7 @@ export class ExtractLoadService {
  * @returns A Promise that resolves to void.
  * @throws An error if there is an issue inserting the edge records.
  */
-    private async bulkInsertEdges(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
+    public async bulkInsertEdges(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
             const col_name = "event_info";
@@ -172,7 +169,7 @@ export class ExtractLoadService {
         }
     }
 
-    private async updateAdditionalFileData(jsonData: any, col_name: string, tdei_dataset_id: string, client: PoolClient) {
+    public async updateAdditionalFileData(jsonData: any, col_name: string, tdei_dataset_id: string, client: PoolClient) {
 
         const keysToIgnore = ['features', 'type'];
         const additionalInfo: { [key: string]: any } = {};
@@ -203,7 +200,7 @@ export class ExtractLoadService {
  * @returns A Promise that resolves to void.
  * @throws An error if there is an issue inserting the node records.
  */
-    private async bulkInsertNodes(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
+    public async bulkInsertNodes(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
             const col_name = "node_info";
@@ -244,7 +241,7 @@ export class ExtractLoadService {
  * @returns A Promise that resolves to void.
  * @throws An error if there is an issue inserting the points.
  */
-    private async bulkInsertPoints(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
+    public async bulkInsertPoints(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
             const col_name = "ext_point_info";
@@ -285,7 +282,7 @@ export class ExtractLoadService {
  * @returns A Promise that resolves to void.
  * @throws An error if there is an issue inserting the records.
  */
-    private async bulkInsertPolygons(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
+    public async bulkInsertPolygons(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
             const col_name = "ext_polygon_info";
@@ -326,7 +323,7 @@ export class ExtractLoadService {
  * @returns A Promise that resolves to void.
  * @throws Error if there is an error inserting the extension line records.
  */
-    private async bulkInsertLines(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
+    public async bulkInsertLines(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
             const col_name = "ext_line_info";
