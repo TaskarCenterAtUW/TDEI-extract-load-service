@@ -6,6 +6,19 @@ import { FileEntity } from "nodets-ms-core/lib/core/storage";
 
 export class Utility {
 
+    public static async stream2buffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
+
+        return new Promise<Buffer>((resolve, reject) => {
+
+            const _buf = Array<any>();
+
+            stream.on("data", chunk => _buf.push(chunk));
+            stream.on("end", () => resolve(Buffer.concat(_buf)));
+            stream.on("error", err => reject(`error converting stream - ${err}`));
+
+        });
+    }
+
     public static async generateSecret(): Promise<string> {
         let secret = null;
         try {
