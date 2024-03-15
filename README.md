@@ -27,3 +27,5 @@ TDEI extract load service to unzip the dataset files and load the records to the
     } 
   }
 ```
+
+An example env file can be found at `.env-example`
