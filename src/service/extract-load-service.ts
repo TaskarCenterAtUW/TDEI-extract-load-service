@@ -109,6 +109,8 @@ export class ExtractLoadService {
                                 return this.bulkInsertLines(client, tdei_dataset_id, user_id, jsonData);
                             } else if (entry.entryName.includes('polygons')) {
                                 return this.bulkInsertPolygons(client, tdei_dataset_id, user_id, jsonData);
+                            } else if (entry.entryName.includes('zones')) {
+                                return this.bulkInsertZones(client, tdei_dataset_id, user_id, jsonData);
                             }
                         }
                     }
@@ -123,6 +125,49 @@ export class ExtractLoadService {
             console.error('Error loading the data:', error);
             // If any of the promises fail, rollback the transaction
             await this.publishMessage(message, false, "Error loading the data" + error);
+        }
+    }
+
+    /**
+* Inserts a batch of zone records into the 'content.zone' table.
+* 
+* @param client - The database client used to execute the query.
+* @param tdei_dataset_id - The ID of the dataset.
+* @param user_id - The ID of the user who requested the insertion.
+* @param jsonData - The JSON data containing the zone records.
+* @returns A Promise that resolves to void.
+* @throws An error if there is an issue inserting the zone records.
+*/
+    public async bulkInsertZones(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
+        const batchSize = environment.bulkInsertSize;
+        try {
+            const col_name = "zone_info";
+            //store additional information
+            await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
+
+            // Batch processing
+            for (let i = 0; i < jsonData.features.length; i += batchSize) {
+                const batch = jsonData.features.slice(i, i + batchSize);
+                let counter = 1;
+
+                // Parameterized query
+                const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
+                const placeholders = batch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
+
+                const queryObject = {
+                    text: `
+                    INSERT INTO content.zone (tdei_dataset_id, feature, requested_by)
+                    VALUES ${placeholders}
+                `,
+                    values: values
+                }
+
+                await dbClient.executeQuery(client, queryObject);
+            }
+            Promise.resolve(true);
+        } catch (error) {
+            console.error('Error inserting zone records:', error);
+            throw new Error('Error inserting zone records:' + error);
         }
     }
 
