@@ -1,7 +1,6 @@
 import { ExtractLoadService } from "../../src/service/extract-load-service";
-import { getMockZipFileStream } from "../common/mock-utils";
+import { getMockZipFileStream, mockCore } from "../common/mock-utils";
 import dbClient from "../../src/database/data-source";
-
 
 describe('BackendService', () => {
     let extractLoadService: ExtractLoadService;
@@ -10,7 +9,67 @@ describe('BackendService', () => {
         extractLoadService = new ExtractLoadService();
     });
 
+
     describe('extract Load Request Processor', () => {
+        it('should process OSW dataset when data_type is "osw"', async () => {
+            // Arrange
+            const message: any = {
+                data: {
+                    file_upload_path: "path/to/osw/file",
+                    data_type: "osw"
+                }
+            };
+
+            const processOSWDatasetMock = jest.spyOn(extractLoadService, 'processOSWDataset').mockResolvedValueOnce();
+            mockCore();
+            // Act
+            const result = await extractLoadService.extractLoadRequestProcessor(message);
+
+            // Assert
+            expect(processOSWDatasetMock).toHaveBeenCalledWith(message, expect.any(Object));
+            expect(result).toBe(true);
+        });
+
+        it('should process Flex dataset when data_type is "flex"', async () => {
+            // Arrange
+            const message: any = {
+                data: {
+                    file_upload_path: "path/to/flex/file",
+                    data_type: "flex"
+                }
+            };
+
+            const processFlexDatasetMock = jest.spyOn(extractLoadService, 'processFlexDataset').mockResolvedValueOnce();
+            mockCore();
+
+            // Act
+            const result = await extractLoadService.extractLoadRequestProcessor(message);
+
+            // Assert
+            expect(processFlexDatasetMock).toHaveBeenCalledWith(message, expect.any(Object));
+            expect(result).toBe(true);
+        });
+
+        it('should process Pathways dataset when data_type is "pathways"', async () => {
+            // Arrange
+            const message: any = {
+                data: {
+                    file_upload_path: "path/to/pathways/file",
+                    data_type: "pathways"
+                }
+            };
+
+            const processPathwaysDatasetMock = jest.spyOn(extractLoadService, 'processPathwaysDataset').mockResolvedValueOnce();
+            mockCore();
+
+            // Act
+            const result = await extractLoadService.extractLoadRequestProcessor(message);
+
+            // Assert
+            expect(processPathwaysDatasetMock).toHaveBeenCalledWith(message, expect.any(Object));
+            expect(result).toBe(true);
+        });
+
         // Successfully delete existing records before inserting new ones
         it('should delete existing records and insert new ones when successful', async () => {
             // Arrange
