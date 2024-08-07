@@ -1,16 +1,9 @@
 /**
  * Generic class to store the files in the system
  */
-import { randomUUID } from "crypto";
 import { Core } from "nodets-ms-core";
 
 class StorageService {
-
-    generateRandomUUID(): string {
-        const randomUID = randomUUID().toString().replace(/-/g, ''); // Take out the - from UID
-        return randomUID;
-    }
-
     /**
      * Generates the folder path for the given record
      * @param projectGroupId ID of the  project group
@@ -24,21 +17,6 @@ class StorageService {
 
         return year + '/' + month + '/' + projectGroupId + '/' + recordId;
     }
-
-    getFormatJobPath(uid: string): string {
-        const today = new Date();
-        const year = today.getFullYear();
-        const month = today.getMonth() + 1;
-        return 'jobs/formatting/' + year + '/' + month + '/' + uid;
-    }
-
-    getValidationJobPath(uid: string): string {
-        const today = new Date();
-        const year = today.getFullYear();
-        const month = today.getMonth() + 1;
-        return 'jobs/validation/' + year + '/' + month + '/' + uid;
-    }
-
     /**
      * Upload the file to storage
      * @param filePath File path of the file

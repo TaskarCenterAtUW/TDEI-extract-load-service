@@ -1,29 +1,19 @@
-import { environment } from "../environment/environment";
-import fetch from "node-fetch";
-import HttpException from "../exceptions/http/http-base-exception";
 import { Readable } from "stream";
 import { FileEntity } from "nodets-ms-core/lib/core/storage";
 
 export class Utility {
 
-    public static async generateSecret(): Promise<string> {
-        let secret = null;
-        try {
-            const result = await fetch(environment.secretGenerateUrl as string, {
-                method: 'get'
-            });
+    public static async stream2buffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
 
-            if (result.status != undefined && result.status != 200)
-                throw new Error(await result.text());
+        return new Promise<Buffer>((resolve, reject) => {
 
-            const data = await result.text();
+            const _buf = Array<any>();
 
-            secret = data;
-        } catch (error: any) {
-            console.error(error);
-            throw new HttpException(400, "Failed to generate secret token");
-        }
-        return secret;
+            stream.on("data", chunk => _buf.push(chunk));
+            stream.on("end", () => resolve(Buffer.concat(_buf)));
+            stream.on("error", err => reject(`error converting stream - ${err}`));
+
+        });
     }
 }
 

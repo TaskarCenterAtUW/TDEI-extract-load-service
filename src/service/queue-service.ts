@@ -2,6 +2,7 @@ import { QueueMessage } from "nodets-ms-core/lib/core/queue";
 import { QueueConfig } from "../model/queue-subscriptions-model";
 import { Topic } from "nodets-ms-core/lib/core/queue/topic";
 import { Core } from "nodets-ms-core";
+import extractLoadService from "./extract-load-service";
 
 export class QueueService {
 
@@ -12,7 +13,7 @@ export class QueueService {
 
     initializeQueue() {
         console.log('Queue initialized');
-        this.queueConfig = new QueueConfig(this.config.queueConfig);
+        this.queueConfig = new QueueConfig(this.config);
         this.subscribe();
     }
 
@@ -49,9 +50,9 @@ export class QueueService {
      * Handle the subscribed messages
      * @param message 
      */
-    private handleMessage = (message: QueueMessage) => {
+    private handleMessage = async (message: QueueMessage) => {
         try {
-
+            await extractLoadService.extractLoadRequestProcessor(message);
         } catch (error) {
             console.error("Error in handling incoming message", error);
         }
