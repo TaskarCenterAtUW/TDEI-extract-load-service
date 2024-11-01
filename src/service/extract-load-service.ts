@@ -5,6 +5,8 @@ import AdmZip, { IZipEntry } from 'adm-zip';
 import { Utility } from "../utility/utility";
 import { environment } from "../environment/environment";
 import { PoolClient } from "pg";
+import { StorageClient } from "nodets-ms-core/lib/core/storage";
+const async = require('async');
 
 
 export class ExtractLoadRequest {
@@ -20,11 +22,21 @@ export interface IExtractLoadRequest {
     extractLoadRequestProcessor(message: QueueMessage): Promise<boolean>;
 }
 
+
+
 /**
  * Represents a service for processing extract and load requests.
  */
 export class ExtractLoadService {
-    constructor() { }
+    storageClient: StorageClient | null = null;
+    constructor() {
+    }
+
+    osw_queue = async.queue((task: any, callback: any) => {
+        this.processOSWDataset(task.message, task.fileUploadPath)
+            .then(() => callback())
+            .catch((err: any) => callback(err));
+    }, 1);
 
     /**
  * Processes the extract and load request.
@@ -37,30 +49,34 @@ export class ExtractLoadService {
         const fileUploadPath = extractLoadRequest.file_upload_path;
         const data_type = extractLoadRequest.data_type;
 
-
-        const storageClient = Core.getStorageClient();
-        const fileEntity = await storageClient!.getFileFromUrl(fileUploadPath);
-        const readStream = await fileEntity.getStream();
-
+        if (!this.storageClient) {
+            this.storageClient = Core.getStorageClient();
+        }
         switch (data_type) {
             case "osw":
-                await this.processOSWDataset(message, readStream);
+                this.osw_queue.push({ message, fileUploadPath }, (err: any) => {
+                    if (err) {
+                        console.error('There was an error processing the task:', err);
+                    } else {
+                        console.log('Task completed successfully');
+                    }
+                });
                 break;
             case "flex":
-                await this.processFlexDataset(message, readStream);
+                await this.processFlexDataset(message, fileUploadPath);
                 break;
             case "pathways":
-                await this.processPathwaysDataset(message, readStream);
+                await this.processPathwaysDataset(message, fileUploadPath);
                 break;
         }
 
         return true;
     }
 
-    public async processPathwaysDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
+    public async processPathwaysDataset(message: QueueMessage, fileUploadPath: string) {
         throw new Error("Method not implemented.");
     }
-    public async processFlexDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
+    public async processFlexDataset(message: QueueMessage, fileUploadPath: string) {
         throw new Error("Method not implemented.");
     }
 
@@ -72,7 +88,10 @@ export class ExtractLoadService {
      * @returns A promise that resolves to a boolean indicating the success of the process.
      * @throws An error if there is any issue with loading the data.
      */
-    public async processOSWDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
+    public async processOSWDataset(message: QueueMessage, fileUploadPath: string) {
+        const fileEntity = await this.storageClient!.getFileFromUrl(fileUploadPath);
+        const readStream = await fileEntity.getStream();
+
         const tdei_dataset_id = message.data.tdei_dataset_id;
         const user_id = message.data.user_id;
         console.log('Processing OSW dataset:', tdei_dataset_id);
@@ -100,17 +119,17 @@ export class ExtractLoadService {
                                 return;
                             }
                             if (entry.entryName.includes('nodes')) {
-                                return this.bulkInsertNodes(client, tdei_dataset_id, user_id, jsonData);
+                                //return this.bulkInsertNodes(client, tdei_dataset_id, user_id, jsonData);
                             } else if (entry.entryName.includes('edges')) {
                                 return this.bulkInsertEdges(client, tdei_dataset_id, user_id, jsonData);
                             } else if (entry.entryName.includes('points')) {
-                                return this.bulkInsertPoints(client, tdei_dataset_id, user_id, jsonData);
+                                //return this.bulkInsertPoints(client, tdei_dataset_id, user_id, jsonData);
                             } else if (entry.entryName.includes('lines')) {
-                                return this.bulkInsertLines(client, tdei_dataset_id, user_id, jsonData);
+                                //return this.bulkInsertLines(client, tdei_dataset_id, user_id, jsonData);
                             } else if (entry.entryName.includes('polygons')) {
-                                return this.bulkInsertPolygons(client, tdei_dataset_id, user_id, jsonData);
+                                //return this.bulkInsertPolygons(client, tdei_dataset_id, user_id, jsonData);
                             } else if (entry.entryName.includes('zones')) {
-                                return this.bulkInsertZones(client, tdei_dataset_id, user_id, jsonData);
+                                //return this.bulkInsertZones(client, tdei_dataset_id, user_id, jsonData);
                             }
                         }
                     }
@@ -191,11 +210,11 @@ export class ExtractLoadService {
  * @throws An error if there is an issue inserting the edge records.
  */
     public async bulkInsertEdges(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
-        const batchSize = environment.bulkInsertSize;
+        const batchSize = 1000;
         try {
             const col_name = "event_info";
             //store additional information
-            await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
+            //await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
 
             // Batch processing
             for (let i = 0; i < jsonData.features.length; i += batchSize) {
@@ -214,7 +233,13 @@ export class ExtractLoadService {
                     values: values
                 }
 
-                await dbClient.executeQuery(client, queryObject);
+                try {
+                    // console.log('Inserting edge records:', values);
+                    await dbClient.executeQuery(client, queryObject);
+                } catch (error) {
+                    console.error('Error inserting edge records:', error);
+                    throw new Error('Error inserting edge records:' + error);
+                }
             }
             Promise.resolve(true);
         } catch (error) {
