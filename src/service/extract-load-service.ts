@@ -118,6 +118,15 @@ export class ExtractLoadService {
                 await Promise.all(promises);
             });
 
+            //Update osw statistics
+            const queryObject = {
+                text: `
+                    SELECT content.tdei_update_osw_stats($1)
+                `,
+                values: [tdei_dataset_id]
+            };
+            await dbClient.query(queryObject);
+
             // All successful
             await this.publishMessage(message, true, "Data loaded successfully");
             console.log('Data loaded successfully');
