@@ -37,30 +37,32 @@ export class ExtractLoadService {
         const fileUploadPath = extractLoadRequest.file_upload_path;
         const data_type = extractLoadRequest.data_type;
 
-
-        const storageClient = Core.getStorageClient();
-        const fileEntity = await storageClient!.getFileFromUrl(fileUploadPath);
-        const readStream = await fileEntity.getStream();
-
         switch (data_type) {
             case "osw":
-                await this.processOSWDataset(message, readStream);
+                await this.processOSWDataset(message, fileUploadPath);
                 break;
             case "flex":
-                await this.processFlexDataset(message, readStream);
+                await this.processFlexDataset(message, fileUploadPath);
                 break;
             case "pathways":
-                await this.processPathwaysDataset(message, readStream);
+                await this.processPathwaysDataset(message, fileUploadPath);
                 break;
         }
 
         return true;
     }
 
-    public async processPathwaysDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
+    private async getFileStream(fileUploadPath: string) {
+        const storageClient = Core.getStorageClient();
+        const fileEntity = await storageClient!.getFileFromUrl(fileUploadPath);
+        const readStream = await fileEntity.getStream();
+        return readStream;
+    }
+
+    public async processPathwaysDataset(message: QueueMessage, fileUploadPath: string) {
         throw new Error("Method not implemented.");
     }
-    public async processFlexDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
+    public async processFlexDataset(message: QueueMessage, fileUploadPath: string) {
         throw new Error("Method not implemented.");
     }
 
@@ -72,11 +74,10 @@ export class ExtractLoadService {
      * @returns A promise that resolves to a boolean indicating the success of the process.
      * @throws An error if there is any issue with loading the data.
      */
-    public async processOSWDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
+    public async processOSWDataset(message: QueueMessage, fileUploadPath: string) {
         const tdei_dataset_id = message.data.tdei_dataset_id;
         const user_id = message.data.user_id;
         console.log('Processing OSW dataset:', tdei_dataset_id);
-        const zip = new AdmZip(await Utility.stream2buffer(readStream));
 
         try {
             console.log('Deleting existing records' + tdei_dataset_id);
@@ -87,6 +88,9 @@ export class ExtractLoadService {
             await dbClient.query(deleteRecordsQueryObject);
 
             await dbClient.runInTransaction(async (client) => {
+                const readStream = await this.getFileStream(fileUploadPath);
+
+                let zip = new AdmZip(await Utility.stream2buffer(readStream));
                 // Execute multiple queries within the transactional scope 
                 const promises = zip.getEntries().map((entry: IZipEntry) => {
                     if (!entry.isDirectory) {
