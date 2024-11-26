@@ -122,6 +122,8 @@ export class ExtractLoadService {
                 await Promise.all(promises);
             });
 
+            console.log(`Data loaded successfully for dataset: ${tdei_dataset_id}`);
+            console.log(`Updating osw statistics for dataset: ${tdei_dataset_id}`);
             //Update osw statistics
             const queryObject = {
                 text: `
@@ -130,10 +132,9 @@ export class ExtractLoadService {
                 values: [tdei_dataset_id]
             };
             await dbClient.query(queryObject);
-
+            console.log(`OSW statistics updated successfully for dataset: ${tdei_dataset_id}`);
             // All successful
             await this.publishMessage(message, true, "Data loaded successfully");
-            console.log('Data loaded successfully');
         } catch (error) {
             console.error('Error loading the data:', error);
             // If any of the promises fail, rollback the transaction
@@ -159,8 +160,8 @@ export class ExtractLoadService {
             await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
 
             // Batch processing
-            for (let i = 0; i < jsonData.features.length; i += batchSize) {
-                const batch = jsonData.features.slice(i, i + batchSize);
+            while (jsonData.features.length > 0) {
+                const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
 
                 // Parameterized query
@@ -202,8 +203,8 @@ export class ExtractLoadService {
             await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
 
             // Batch processing
-            for (let i = 0; i < jsonData.features.length; i += batchSize) {
-                const batch = jsonData.features.slice(i, i + batchSize);
+            while (jsonData.features.length > 0) {
+                const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
 
                 // Parameterized query
@@ -265,8 +266,8 @@ export class ExtractLoadService {
             //store additional information
             await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
             // Batch processing
-            for (let i = 0; i < jsonData.features.length; i += batchSize) {
-                const batch = jsonData.features.slice(i, i + batchSize);
+            while (jsonData.features.length > 0) {
+                const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
                 // Parameterized query
                 const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
@@ -306,8 +307,8 @@ export class ExtractLoadService {
             //store additional information
             await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
             // Batch processing
-            for (let i = 0; i < jsonData.features.length; i += batchSize) {
-                const batch = jsonData.features.slice(i, i + batchSize);
+            while (jsonData.features.length > 0) {
+                const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
                 // Parameterized query
                 const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
@@ -347,8 +348,8 @@ export class ExtractLoadService {
             //store additional information
             await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
             // Batch processing
-            for (let i = 0; i < jsonData.features.length; i += batchSize) {
-                const batch = jsonData.features.slice(i, i + batchSize);
+            while (jsonData.features.length > 0) {
+                const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
                 // Parameterized query
                 const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
@@ -388,8 +389,8 @@ export class ExtractLoadService {
             //store additional information
             await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
             // Batch processing
-            for (let i = 0; i < jsonData.features.length; i += batchSize) {
-                const batch = jsonData.features.slice(i, i + batchSize);
+            while (jsonData.features.length > 0) {
+                const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
                 // Parameterized query
                 const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
