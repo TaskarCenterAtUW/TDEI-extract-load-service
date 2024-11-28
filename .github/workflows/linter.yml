@@ -15,7 +15,7 @@ on:
       - '**'
     # Remove the line above to run when pushing to master
   pull_request:
-    branches: [master, dev, stage]
+    branches: [ main, dev, stage ]
 
 ###############
 # Set the Job #
@@ -45,10 +45,10 @@ jobs:
       # Run Linter against code base #
       ################################
       - name: Install npm dependencies
-        run : npm install
+        run: npm install
 
       - name: Lint code base
-        run : npm run lint
+        run: npm run lint
   UnitTest:
     # Name the Job
     name: Unit Test Cases
@@ -69,11 +69,46 @@ jobs:
           # list of changed files within `super-linter`
           fetch-depth: 0
 
+      - name: Determine output folder
+        id: set_output_folder
+        run: |
+          if [[ $GITHUB_EVENT_NAME == "pull_request" ]]; then
+            branch_name=$GITHUB_BASE_REF
+          else
+            branch_name=$GITHUB_REF_NAME
+          fi
+          if [[ $branch_name == "main" ]]; then
+            echo "output_folder=prod" >> $GITHUB_ENV
+          elif [[ $branch_name == "stage" ]]; then
+            echo "output_folder=stage" >> $GITHUB_ENV
+          elif [[ $branch_name == "dev" ]]; then
+            echo "output_folder=dev" >> $GITHUB_ENV
+          else
+            echo "Unknown branch: $branch_name"
+            exit 1
+          fi
+
       ################################
       # Run Linter against code base #
       ################################
       - name: Install npm dependencies
-        run : npm install
+        run: npm install
 
       - name: Run unit test cases
-        run : npm run test
+        run: |
+          timestamp=$(date '+%Y-%m-%d_%H-%M-%S')
+          mkdir -p test_results
+          log_file="test_results/${timestamp}_report.log"
+          echo -e "\nTest Cases Report Report\n" >> $log_file
+          npm run test >> $log_file 2>&1
+
+
+      - name: Upload report to Azure
+        uses: LanceMcCarthy/Action-AzureBlobUpload@v2
+        with:
+          source_folder: 'test_results'
+          destination_folder: '${{ env.output_folder }}'
+          connection_string: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+          container_name: 'extract-load-service'
+          clean_destination_folder: false
+          delete_if_exists: false

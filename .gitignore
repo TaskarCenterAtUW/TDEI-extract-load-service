@@ -1,3 +1,4 @@
+
 # Logs
 logs
 *.log
@@ -132,3 +133,5 @@ build
 
 .vscode
 test-report.html
+test_results
+.idea/
