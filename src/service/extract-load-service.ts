@@ -50,7 +50,7 @@ export class ExtractLoadService {
         return true;
     }
 
-    private async getFileStream(fileUploadPath: string) {
+    public async getFileStream(fileUploadPath: string) {
         const storageClient = Core.getStorageClient();
         const fileEntity = await storageClient!.getFileFromUrl(fileUploadPath);
         const readStream = await fileEntity.getStream();
