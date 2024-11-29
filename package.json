@@ -16,9 +16,10 @@
     "@types/jest": "^29.5.12",
     "@types/jsonwebtoken": "^9.0.5",
     "@types/pg": "^8.11.0",
-    "typescript": "^5.3.3",
+    "@types/unzipper": "^0.10.10",
+    "ts-jest": "^29.1.2",
     "ts-node": "^10.9.2",
-    "ts-jest": "^29.1.2"
+    "typescript": "^5.3.3"
   },
   "dependencies": {
     "@azure/service-bus": "^7.9.4",
@@ -33,6 +34,7 @@
     "lodash": "^4.17.21",
     "nodets-ms-core": "^0.0.10",
     "pg": "^8.11.3",
-    "rimraf": "^5.0.5"
+    "rimraf": "^5.0.5",
+    "unzipper": "^0.12.3"
   }
 }

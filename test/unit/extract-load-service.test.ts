@@ -1,6 +1,12 @@
 import { ExtractLoadService } from "../../src/service/extract-load-service";
-import { getMockZipFileStream, mockCore } from "../common/mock-utils";
+import { mockCore } from "../common/mock-utils";
 import dbClient from "../../src/database/data-source";
+import { Readable } from 'stream';
+import unzipper from 'unzipper';
+
+jest.mock('unzipper', () => ({
+    Parse: jest.fn()
+}));
 
 describe('BackendService', () => {
     let extractLoadService: ExtractLoadService;
@@ -26,7 +32,7 @@ describe('BackendService', () => {
             const result = await extractLoadService.extractLoadRequestProcessor(message);
 
             // Assert
-            expect(processOSWDatasetMock).toHaveBeenCalledWith(message, expect.any(Object));
+            expect(processOSWDatasetMock).toHaveBeenCalledWith(message, expect.any(String));
             expect(result).toBe(true);
         });
 
@@ -46,7 +52,7 @@ describe('BackendService', () => {
             const result = await extractLoadService.extractLoadRequestProcessor(message);
 
             // Assert
-            expect(processFlexDatasetMock).toHaveBeenCalledWith(message, expect.any(Object));
+            expect(processFlexDatasetMock).toHaveBeenCalledWith(message, expect.any(String));
             expect(result).toBe(true);
         });
 
@@ -66,7 +72,7 @@ describe('BackendService', () => {
             const result = await extractLoadService.extractLoadRequestProcessor(message);
 
             // Assert
-            expect(processPathwaysDatasetMock).toHaveBeenCalledWith(message, expect.any(Object));
+            expect(processPathwaysDatasetMock).toHaveBeenCalledWith(message, expect.any(String));
             expect(result).toBe(true);
         });
 
@@ -95,9 +101,32 @@ describe('BackendService', () => {
             extractLoadService.bulkInsertPoints = jest.fn();
             extractLoadService.bulkInsertLines = jest.fn();
             extractLoadService.bulkInsertPolygons = jest.fn();
+            extractLoadService.bulkInsertZones = jest.fn();
+
+
+            // Mock getFileStream to return a readable stream
+            const mockFileStream = new Readable();
+            mockFileStream._read = () => { }; // No-op
+            jest.spyOn(extractLoadService, 'getFileStream').mockResolvedValue(mockFileStream);
+
+            // Mock unzipper.Parse to return a mock stream
+            const mockUnzipStream = new Readable({ objectMode: true });
+            mockUnzipStream._read = () => { }; // No-op
+            (unzipper.Parse as jest.Mock).mockReturnValue(mockUnzipStream);
+
+            // Push the mock entry to the unzip stream
+            mockUnzipStream.push(getMockEntry("edges.geojson"));
+            mockUnzipStream.push(getMockEntry("nodes.geojson"));
+            mockUnzipStream.push(getMockEntry("points.geojson"));
+            mockUnzipStream.push(getMockEntry("lines.geojson"));
+            mockUnzipStream.push(getMockEntry("polygons.geojson"));
+            mockUnzipStream.push(getMockEntry("zones.geojson"));
+            //Add more entries with different file names
+
+            mockUnzipStream.push(null); // End the stream
 
             // Act
-            await extractLoadService.processOSWDataset(message, getMockZipFileStream());
+            await extractLoadService.processOSWDataset(message, "file_upload_path");
 
             // Assert
             expect(querySpy).toHaveBeenCalledWith({
@@ -114,7 +143,16 @@ describe('BackendService', () => {
             expect(extractLoadService.bulkInsertPolygons).toHaveBeenCalled();
 
             expect(publishMessageMock).toHaveBeenCalledWith(message, true, "Data loaded successfully");
-        });
+
+            function getMockEntry(name: string) {
+                const mockEntry: any = new Readable({ objectMode: true });
+                mockEntry._read = () => { }; // No-op
+                mockEntry.type = 'File';
+                mockEntry.path = name;
+                mockEntry.buffer = jest.fn().mockResolvedValue(Buffer.from(JSON.stringify({ features: [] })));
+                return mockEntry;
+            }
+        }, 15000);
         it('should publish message if any error occurs', async () => {
             // Arrange
             const message: any = {
@@ -128,9 +166,12 @@ describe('BackendService', () => {
             const querySpy = jest.spyOn(dbClient, 'query').mockImplementation(queryMock);
             const publishMessageMock = jest.fn();
             extractLoadService.publishMessage = publishMessageMock;
-
+            // Mock getFileStream to return a readable stream
+            const mockFileStream = new Readable();
+            mockFileStream._read = () => { }; // No-op
+            jest.spyOn(extractLoadService, 'getFileStream').mockResolvedValue(mockFileStream);
             // Act
-            await extractLoadService.processOSWDataset(message, getMockZipFileStream());
+            await extractLoadService.processOSWDataset(message, "file_upload_path");
 
             // Assert
             expect(querySpy).toHaveBeenCalledWith({
