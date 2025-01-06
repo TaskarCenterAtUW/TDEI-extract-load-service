@@ -313,7 +313,7 @@ export class ExtractLoadService {
         //Insert into the dataset table
         const queryObject = {
             text: `
-                INSERT INTO content.extension_file (tdei_dataset_id, name, file_meta, requested_by)\
+                INSERT INTO content.extension_file (tdei_dataset_id, name, file_meta, requested_by) 
                 VALUES ($1, $2, $3, $4) RETURNING id
             `,
             values: [tdei_dataset_id, path.parse(file_name).name, additionalInfo, user_id]
