@@ -8,7 +8,7 @@ jest.mock('unzipper', () => ({
     Parse: jest.fn()
 }));
 
-describe('BackendService', () => {
+describe('ExtractLoadService', () => {
     let extractLoadService: ExtractLoadService;
 
     beforeEach(() => {
@@ -425,6 +425,7 @@ describe('BackendService', () => {
             const querySpy = jest.spyOn(dbClient, 'executeQuery').mockImplementation(queryMock);
 
             const extractLoadService = new ExtractLoadService();
+            extractLoadService.updateAdditionalFileData = jest.fn();
 
             // Act & Assert
             await expect(
@@ -449,13 +450,17 @@ describe('BackendService', () => {
                 ],
             };
 
-            const queryMock = jest.fn().mockResolvedValueOnce(undefined);
+            const queryMock = jest.fn().mockResolvedValueOnce({
+                rows: [
+                    { id: 1 }
+                ]
+            });
             const querySpy = jest.spyOn(dbClient, 'executeQuery').mockImplementation(queryMock);
 
             const extractLoadService = new ExtractLoadService();
             extractLoadService.updateAdditionalFileData = jest.fn();
             // Act
-            await extractLoadService.bulkInsertExtension({} as any, tdei_dataset_id, user_id, jsonData);
+            await extractLoadService.bulkInsertExtension({} as any, tdei_dataset_id, user_id, jsonData, { path: "" });
 
             // Assert
             expect(querySpy).toHaveBeenCalled();
@@ -479,7 +484,7 @@ describe('BackendService', () => {
 
             // Act & Assert
             await expect(
-                extractLoadService.bulkInsertExtension({} as any, tdei_dataset_id, user_id, jsonData)
+                extractLoadService.bulkInsertExtension({} as any, tdei_dataset_id, user_id, jsonData, { path: "" })
             ).rejects.toThrow();
 
             expect(querySpy).toHaveBeenCalled();
