@@ -8,7 +8,8 @@ dotenv.config();
 export const environment = {
     appName: process.env.npm_package_name,
     eventBus: {
-        extractLoadResponseTopic: process.env.EXTRACT_LOAD_RESPONSE_TOPIC
+        extractLoadResponseTopic: process.env.EXTRACT_LOAD_RESPONSE_TOPIC,
+        maxConcurrentMessages: parseInt(process.env.MAX_CONCURRENT_MESSAGES ?? "2"),
     },
     database: {
         username: process.env.POSTGRES_USER,
