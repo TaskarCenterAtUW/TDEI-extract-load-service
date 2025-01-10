@@ -1,11 +1,9 @@
 import { QueueMessage } from "nodets-ms-core/lib/core/queue";
 import dbClient from "../database/data-source";
 import { Core } from "nodets-ms-core";
-import AdmZip, { IZipEntry } from 'adm-zip';
-import { Utility } from "../utility/utility";
 import { environment } from "../environment/environment";
 import { PoolClient } from "pg";
-
+import unzipper from 'unzipper';
 
 export class ExtractLoadRequest {
     data_type!: string;
@@ -37,30 +35,32 @@ export class ExtractLoadService {
         const fileUploadPath = extractLoadRequest.file_upload_path;
         const data_type = extractLoadRequest.data_type;
 
-
-        const storageClient = Core.getStorageClient();
-        const fileEntity = await storageClient!.getFileFromUrl(fileUploadPath);
-        const readStream = await fileEntity.getStream();
-
         switch (data_type) {
             case "osw":
-                await this.processOSWDataset(message, readStream);
+                await this.processOSWDataset(message, fileUploadPath);
                 break;
             case "flex":
-                await this.processFlexDataset(message, readStream);
+                await this.processFlexDataset(message, fileUploadPath);
                 break;
             case "pathways":
-                await this.processPathwaysDataset(message, readStream);
+                await this.processPathwaysDataset(message, fileUploadPath);
                 break;
         }
 
         return true;
     }
 
-    public async processPathwaysDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
+    public async getFileStream(fileUploadPath: string) {
+        const storageClient = Core.getStorageClient();
+        const fileEntity = await storageClient!.getFileFromUrl(fileUploadPath);
+        const readStream = await fileEntity.getStream();
+        return readStream;
+    }
+
+    public async processPathwaysDataset(message: QueueMessage, fileUploadPath: string) {
         throw new Error("Method not implemented.");
     }
-    public async processFlexDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
+    public async processFlexDataset(message: QueueMessage, fileUploadPath: string) {
         throw new Error("Method not implemented.");
     }
 
@@ -72,11 +72,10 @@ export class ExtractLoadService {
      * @returns A promise that resolves to a boolean indicating the success of the process.
      * @throws An error if there is any issue with loading the data.
      */
-    public async processOSWDataset(message: QueueMessage, readStream: NodeJS.ReadableStream) {
+    public async processOSWDataset(message: QueueMessage, fileUploadPath: string) {
         const tdei_dataset_id = message.data.tdei_dataset_id;
         const user_id = message.data.user_id;
         console.log('Processing OSW dataset:', tdei_dataset_id);
-        const zip = new AdmZip(await Utility.stream2buffer(readStream));
 
         try {
             console.log('Deleting existing records' + tdei_dataset_id);
@@ -87,37 +86,44 @@ export class ExtractLoadService {
             await dbClient.query(deleteRecordsQueryObject);
 
             await dbClient.runInTransaction(async (client) => {
-                // Execute multiple queries within the transactional scope 
-                const promises = zip.getEntries().map((entry: IZipEntry) => {
-                    if (!entry.isDirectory) {
-                        const content = entry.getData().toString('utf8');
-                        if (entry.entryName.endsWith('.geojson')) {
-                            let jsonData;
-                            try {
-                                jsonData = JSON.parse(content);
-                            } catch (error) {
-                                console.error("Unable to parse content as JSON:", content);
-                                return;
-                            }
-                            if (entry.entryName.includes('nodes')) {
-                                return this.bulkInsertNodes(client, tdei_dataset_id, user_id, jsonData);
-                            } else if (entry.entryName.includes('edges')) {
-                                return this.bulkInsertEdges(client, tdei_dataset_id, user_id, jsonData);
-                            } else if (entry.entryName.includes('points')) {
-                                return this.bulkInsertPoints(client, tdei_dataset_id, user_id, jsonData);
-                            } else if (entry.entryName.includes('lines')) {
-                                return this.bulkInsertLines(client, tdei_dataset_id, user_id, jsonData);
-                            } else if (entry.entryName.includes('polygons')) {
-                                return this.bulkInsertPolygons(client, tdei_dataset_id, user_id, jsonData);
-                            } else if (entry.entryName.includes('zones')) {
-                                return this.bulkInsertZones(client, tdei_dataset_id, user_id, jsonData);
-                            }
+                const directory = (await this.getFileStream(fileUploadPath)).pipe(unzipper.Parse({ forceStream: true }));
+
+                const promises = [];
+                console.time(`processFiles ${tdei_dataset_id}`);
+                for await (const entry of directory) {
+                    if (entry.type === 'File' && entry.path.endsWith('.geojson')) {
+                        const content = await entry.buffer();
+                        let jsonData;
+                        try {
+                            jsonData = JSON.parse(content.toString('utf8'));
+                        } catch (error) {
+                            console.error("Unable to parse content as JSON:", content.toString('utf8'));
+                            continue;
                         }
+                        if (entry.path.includes('nodes')) {
+                            promises.push(this.bulkInsertNodes(client, tdei_dataset_id, user_id, jsonData));
+                        } else if (entry.path.includes('edges')) {
+                            promises.push(this.bulkInsertEdges(client, tdei_dataset_id, user_id, jsonData));
+                        } else if (entry.path.includes('points')) {
+                            promises.push(this.bulkInsertPoints(client, tdei_dataset_id, user_id, jsonData));
+                        } else if (entry.path.includes('lines')) {
+                            promises.push(this.bulkInsertLines(client, tdei_dataset_id, user_id, jsonData));
+                        } else if (entry.path.includes('polygons')) {
+                            promises.push(this.bulkInsertPolygons(client, tdei_dataset_id, user_id, jsonData));
+                        } else if (entry.path.includes('zones')) {
+                            promises.push(this.bulkInsertZones(client, tdei_dataset_id, user_id, jsonData));
+                        }
+                    } else {
+                        entry.autodrain();
                     }
-                });
+                }
                 await Promise.all(promises);
+                console.timeEnd(`processFiles ${tdei_dataset_id}`);
             });
 
+            console.log(`Data loaded successfully for dataset: ${tdei_dataset_id}`);
+            console.log(`Updating osw statistics for dataset: ${tdei_dataset_id}`);
+            console.time(`updateOSWStats ${tdei_dataset_id}`);
             //Update osw statistics
             const queryObject = {
                 text: `
@@ -126,10 +132,10 @@ export class ExtractLoadService {
                 values: [tdei_dataset_id]
             };
             await dbClient.query(queryObject);
-
+            console.timeEnd(`updateOSWStats ${tdei_dataset_id}`);
+            console.log(`OSW statistics updated successfully for dataset: ${tdei_dataset_id}`);
             // All successful
             await this.publishMessage(message, true, "Data loaded successfully");
-            console.log('Data loaded successfully');
         } catch (error) {
             console.error('Error loading the data:', error);
             // If any of the promises fail, rollback the transaction
@@ -155,8 +161,8 @@ export class ExtractLoadService {
             await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
 
             // Batch processing
-            for (let i = 0; i < jsonData.features.length; i += batchSize) {
-                const batch = jsonData.features.slice(i, i + batchSize);
+            while (jsonData.features.length > 0) {
+                const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
 
                 // Parameterized query
@@ -196,10 +202,11 @@ export class ExtractLoadService {
             const col_name = "event_info";
             //store additional information
             await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
-
+            console.time(`bulkInsertEdges ${tdei_dataset_id}`);
+            console.log('Inserting edge records');
             // Batch processing
-            for (let i = 0; i < jsonData.features.length; i += batchSize) {
-                const batch = jsonData.features.slice(i, i + batchSize);
+            while (jsonData.features.length > 0) {
+                const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
 
                 // Parameterized query
@@ -216,6 +223,7 @@ export class ExtractLoadService {
 
                 await dbClient.executeQuery(client, queryObject);
             }
+            console.timeEnd(`bulkInsertEdges ${tdei_dataset_id}`);
             Promise.resolve(true);
         } catch (error) {
             console.error('Error inserting edge records:', error);
@@ -261,8 +269,11 @@ export class ExtractLoadService {
             //store additional information
             await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
             // Batch processing
-            for (let i = 0; i < jsonData.features.length; i += batchSize) {
-                const batch = jsonData.features.slice(i, i + batchSize);
+            console.time(`bulkInsertNodes ${tdei_dataset_id}`);
+            console.log('Inserting node records');
+
+            while (jsonData.features.length > 0) {
+                const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
                 // Parameterized query
                 const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
@@ -278,6 +289,7 @@ export class ExtractLoadService {
 
                 await dbClient.executeQuery(client, queryObject);
             }
+            console.timeEnd(`bulkInsertNodes ${tdei_dataset_id}`);
             Promise.resolve(true);
         } catch (error) {
             console.error('Error inserting node records:', error);
@@ -302,8 +314,8 @@ export class ExtractLoadService {
             //store additional information
             await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
             // Batch processing
-            for (let i = 0; i < jsonData.features.length; i += batchSize) {
-                const batch = jsonData.features.slice(i, i + batchSize);
+            while (jsonData.features.length > 0) {
+                const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
                 // Parameterized query
                 const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
@@ -343,8 +355,8 @@ export class ExtractLoadService {
             //store additional information
             await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
             // Batch processing
-            for (let i = 0; i < jsonData.features.length; i += batchSize) {
-                const batch = jsonData.features.slice(i, i + batchSize);
+            while (jsonData.features.length > 0) {
+                const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
                 // Parameterized query
                 const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
@@ -384,8 +396,8 @@ export class ExtractLoadService {
             //store additional information
             await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
             // Batch processing
-            for (let i = 0; i < jsonData.features.length; i += batchSize) {
-                const batch = jsonData.features.slice(i, i + batchSize);
+            while (jsonData.features.length > 0) {
+                const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
                 // Parameterized query
                 const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);

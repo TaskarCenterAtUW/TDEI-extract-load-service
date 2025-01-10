@@ -31,9 +31,9 @@ export function getMockFileEntity() {
         mimeType: "csv",
         filePath: "test_file_path",
         remoteUrl: "",
-        getStream: function (): Promise<NodeJS.ReadableStream> {
+        getStream: function (): Promise<Readable> {
             const mockedStream = new Readable();
-            mockedStream._read = function () { /* do nothing */ };
+            mockedStream._read = function () { };
             return Promise.resolve(mockedStream);
         },
         getBodyText: function (): Promise<string> {
@@ -41,6 +41,12 @@ export function getMockFileEntity() {
         },
         upload: function (): Promise<FileEntity> {
             return Promise.resolve(this);
+        },
+        uploadStream: function (stream: Readable): Promise<void> {
+            throw new Error("Function not implemented.");
+        },
+        deleteFile: function (): Promise<void> {
+            return Promise.resolve();
         }
     };
     return fileEntity;
@@ -56,10 +62,21 @@ export function getMockStorageClient() {
         },
         getFileFromUrl: function (): Promise<FileEntity> {
             return Promise.resolve(getMockFileEntity());
+        },
+        getSASUrl: function (): Promise<string> {
+            return Promise.resolve(getMockSASUrl());
+        },
+        cloneFile: function (fileUrl: string, destinationContainerName: string, destinationFilePath: string): Promise<FileEntity> {
+            throw Promise.resolve(getMockFileEntity());
         }
     };
     return storageClientObj;
 }
+
+export function getMockSASUrl() {
+    return "https://test.com";
+}
+
 
 export function getMockStorageContainer() {
     const storageContainerObj: StorageContainer = {
