@@ -8,7 +8,7 @@ jest.mock('unzipper', () => ({
     Parse: jest.fn()
 }));
 
-describe('BackendService', () => {
+describe('ExtractLoadService', () => {
     let extractLoadService: ExtractLoadService;
 
     beforeEach(() => {
@@ -425,10 +425,66 @@ describe('BackendService', () => {
             const querySpy = jest.spyOn(dbClient, 'executeQuery').mockImplementation(queryMock);
 
             const extractLoadService = new ExtractLoadService();
+            extractLoadService.updateAdditionalFileData = jest.fn();
 
             // Act & Assert
             await expect(
                 extractLoadService.bulkInsertLines({} as any, tdei_dataset_id, user_id, jsonData)
+            ).rejects.toThrow();
+
+            expect(querySpy).toHaveBeenCalled();
+
+        });
+    });
+
+    describe('bulk Insert Extension file', () => {
+        it('should insert ext geom in batches', async () => {
+            // Arrange
+            const tdei_dataset_id = 'dataset123';
+            const user_id = 'user123';
+            const jsonData = {
+                features: [
+                    { id: 1, name: 'Lines 1' },
+                    { id: 2, name: 'Polygon' },
+                    { id: 3, name: 'Point' },
+                ],
+            };
+
+            const queryMock = jest.fn().mockResolvedValueOnce({
+                rows: [
+                    { id: 1 }
+                ]
+            });
+            const querySpy = jest.spyOn(dbClient, 'executeQuery').mockImplementation(queryMock);
+
+            const extractLoadService = new ExtractLoadService();
+            extractLoadService.updateAdditionalFileData = jest.fn();
+            // Act
+            await extractLoadService.bulkInsertExtension({} as any, tdei_dataset_id, user_id, jsonData, { path: "" });
+
+            // Assert
+            expect(querySpy).toHaveBeenCalled();
+        });
+
+        it('should throw an error if there is an error inserting lines records', async () => {
+            // Arrange
+            const tdei_dataset_id = 'dataset123';
+            const user_id = 'user123';
+            const jsonData = {
+                features: [
+                    { id: 1, name: 'Lines 1' },
+                    { id: 2, name: 'Polygon' },
+                    { id: 3, name: 'Point' },
+                ],
+            };
+            const queryMock = jest.fn().mockRejectedValueOnce(new Error('Database error'));
+            const querySpy = jest.spyOn(dbClient, 'executeQuery').mockImplementation(queryMock);
+
+            const extractLoadService = new ExtractLoadService();
+
+            // Act & Assert
+            await expect(
+                extractLoadService.bulkInsertExtension({} as any, tdei_dataset_id, user_id, jsonData, { path: "" })
             ).rejects.toThrow();
 
             expect(querySpy).toHaveBeenCalled();

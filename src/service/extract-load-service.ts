@@ -4,7 +4,7 @@ import { Core } from "nodets-ms-core";
 import { environment } from "../environment/environment";
 import { PoolClient } from "pg";
 import unzipper from 'unzipper';
-
+import path from 'path';
 export class ExtractLoadRequest {
     data_type!: string;
     tdei_dataset_id!: string;
@@ -112,7 +112,11 @@ export class ExtractLoadService {
                             promises.push(this.bulkInsertPolygons(client, tdei_dataset_id, user_id, jsonData));
                         } else if (entry.path.includes('zones')) {
                             promises.push(this.bulkInsertZones(client, tdei_dataset_id, user_id, jsonData));
+                        } else {
+                            //Process geojson as an extension file if it does not match any of the above
+                            promises.push(this.bulkInsertExtension(client, tdei_dataset_id, user_id, jsonData, entry));
                         }
+
                     } else {
                         entry.autodrain();
                     }
@@ -231,6 +235,50 @@ export class ExtractLoadService {
         }
     }
 
+    /**
+* Inserts a batch of edge records into the 'content.edge' table.
+* 
+* @param client - The database client used to execute the query.
+* @param tdei_dataset_id - The ID of the dataset.
+* @param user_id - The ID of the user who requested the insertion.
+* @param jsonData - The JSON data containing the edge records.
+* @returns A Promise that resolves to void.
+* @throws An error if there is an issue inserting the edge records.
+*/
+    public async bulkInsertExtension(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any, entry: any): Promise<void> {
+        const batchSize = environment.bulkInsertSize;
+        try {
+            //store additional information
+            const ext_file_id = await this.updateExtensionFileData(jsonData, tdei_dataset_id, user_id, entry.path, client);
+            console.time(`bulkInsertExtension ${tdei_dataset_id}`);
+            console.log('Inserting extension records');
+            // Batch processing
+            while (jsonData.features.length > 0) {
+                const batch = jsonData.features.splice(0, batchSize);
+                let counter = 1;
+
+                // Parameterized query
+                const values = batch.flatMap((record: any) => [tdei_dataset_id, ext_file_id, record, user_id]);
+                const placeholders = batch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++}, $${counter++})`).join(', ');
+
+                const queryObject = {
+                    text: `
+                    INSERT INTO content.extension (tdei_dataset_id, ext_file_id, feature, requested_by)
+                    VALUES ${placeholders}
+                `,
+                    values: values
+                }
+
+                await dbClient.executeQuery(client, queryObject);
+            }
+            console.timeEnd(`bulkInsertExtension ${tdei_dataset_id}`);
+            Promise.resolve(true);
+        } catch (error) {
+            console.error('Error inserting extension records:', error);
+            throw new Error('Error inserting extension records:' + error);
+        }
+    }
+
     public async updateAdditionalFileData(jsonData: any, col_name: string, tdei_dataset_id: string, client: PoolClient) {
 
         const keysToIgnore = ['features', 'type'];
@@ -250,6 +298,29 @@ export class ExtractLoadService {
         };
 
         await dbClient.executeQuery(client, queryObject);
+    }
+
+    public async updateExtensionFileData(jsonData: any, tdei_dataset_id: string, user_id: string, file_name: string, client: PoolClient): Promise<number> {
+
+        const keysToIgnore = ['features', 'type'];
+        const additionalInfo: { [key: string]: any } = {};
+        Object.entries(jsonData).forEach(([key, value]) => {
+            if (!keysToIgnore.includes(key)) {
+                additionalInfo[key] = value ?? '';
+            }
+        });
+
+        //Insert into the dataset table
+        const queryObject = {
+            text: `
+                INSERT INTO content.extension_file (tdei_dataset_id, name, file_meta, requested_by) 
+                VALUES ($1, $2, $3, $4) RETURNING id
+            `,
+            values: [tdei_dataset_id, path.parse(file_name).name, additionalInfo, user_id]
+        };
+
+        let result = await dbClient.executeQuery(client, queryObject);
+        return result.rows[0].id;
     }
 
     /**
