@@ -30,6 +30,9 @@ Application configuration is read from .env file. Below are the list of environe
 |OSW_SCHEMA_URL | OSW Schema Url|
 |EXTRACT_LOAD_RESPONSE_TOPIC| Response topic on which result to be announced |
 
+## Subscription 
+Subscriptions to listening topics are configured in the subscription.json file. This file defines the topics that the system listens to for incoming messages.
+
 ## Build
 
 Follow the steps to install the node packages required for both building and running the application
