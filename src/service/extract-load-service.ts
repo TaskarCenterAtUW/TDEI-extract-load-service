@@ -5,6 +5,14 @@ import { environment } from "../environment/environment";
 import { PoolClient } from "pg";
 import unzipper from 'unzipper';
 import path from 'path';
+
+import { from as copyFrom } from 'pg-copy-streams';
+import { chain } from 'stream-chain';
+import { parser } from 'stream-json';
+import { pick } from 'stream-json/filters/Pick';
+import { streamArray } from 'stream-json/streamers/StreamArray';
+import { Readable } from 'stream';
+
 export class ExtractLoadRequest {
     data_type!: string;
     tdei_dataset_id!: string;
@@ -44,6 +52,18 @@ export class ExtractLoadService {
                 break;
             case "pathways":
                 await this.processPathwaysDataset(message, fileUploadPath);
+                break;
+            case "benchmark-batch":
+                await this.benchmarkBatchProcessing(message, fileUploadPath);
+                break;
+            case "benchmark-geojson-stream":
+                await this.benchmarkGeoJSONStreaming(message, fileUploadPath);
+                break;
+            case "benchmark-csv-stream":
+                await this.benchmarkCSVStreaming(message, fileUploadPath);
+                break;
+            case "benchmark-csv-local":
+                await this.benchmarkCSVLocal(message, fileUploadPath);
                 break;
         }
 
@@ -88,40 +108,32 @@ export class ExtractLoadService {
             await dbClient.runInTransaction(async (client) => {
                 const directory = (await this.getFileStream(fileUploadPath)).pipe(unzipper.Parse({ forceStream: true }));
 
-                const promises = [];
                 console.time(`processFiles ${tdei_dataset_id}`);
-                for await (const entry of directory) {
-                    if (entry.type === 'File' && entry.path.endsWith('.geojson')) {
-                        const content = await entry.buffer();
-                        let jsonData;
-                        try {
-                            jsonData = JSON.parse(content.toString('utf8'));
-                        } catch (error) {
-                            console.error("Unable to parse content as JSON:", content.toString('utf8'));
-                            continue;
-                        }
-                        if (entry.path.includes('nodes')) {
-                            promises.push(this.bulkInsertNodes(client, tdei_dataset_id, user_id, jsonData));
-                        } else if (entry.path.includes('edges')) {
-                            promises.push(this.bulkInsertEdges(client, tdei_dataset_id, user_id, jsonData));
-                        } else if (entry.path.includes('points')) {
-                            promises.push(this.bulkInsertPoints(client, tdei_dataset_id, user_id, jsonData));
-                        } else if (entry.path.includes('lines')) {
-                            promises.push(this.bulkInsertLines(client, tdei_dataset_id, user_id, jsonData));
-                        } else if (entry.path.includes('polygons')) {
-                            promises.push(this.bulkInsertPolygons(client, tdei_dataset_id, user_id, jsonData));
-                        } else if (entry.path.includes('zones')) {
-                            promises.push(this.bulkInsertZones(client, tdei_dataset_id, user_id, jsonData));
-                        } else {
-                            //Process geojson as an extension file if it does not match any of the above
-                            promises.push(this.bulkInsertExtension(client, tdei_dataset_id, user_id, jsonData, entry));
-                        }
+                let processedFiles = 0;
+                let totalFeatures = 0;
 
+                for await (const entry of directory) {
+                    if (entry.type === 'File' && entry.path.endsWith('.csv') && !entry.path.includes('__MACOSX')) {
+                        try {
+                            if (entry.path.includes('nodes')) {
+                                await this.bulkInsertCSVDirect(client, 'node', entry);
+                                processedFiles++;
+                            } else if (entry.path.includes('edges')) {
+                                await this.bulkInsertCSVDirect(client, 'edge', entry);
+                                processedFiles++;
+                            } else {
+                                entry.autodrain();
+                            }
+                        } catch (error) {
+                            console.error(`Error processing CSV file ${entry.path}:`, error);
+                            throw error; // Re-throw to ensure transaction rollback
+                        }
                     } else {
                         entry.autodrain();
                     }
                 }
-                await Promise.all(promises);
+
+                console.log(`Successfully processed ${processedFiles} CSV files`);
                 console.timeEnd(`processFiles ${tdei_dataset_id}`);
             });
 
@@ -144,6 +156,593 @@ export class ExtractLoadService {
             console.error('Error loading the data:', error);
             // If any of the promises fail, rollback the transaction
             await this.publishMessage(message, false, "Error loading the data" + error);
+        }
+    }
+
+
+    public async bulkInsertNodes2(
+        client: PoolClient,
+        tdei_dataset_id: string,
+        user_id: string,
+        entry: any
+    ): Promise<void> {
+        try {
+            console.log(`Starting streaming bulk insert for nodes from file: ${entry.path}`);
+
+            // Prepare COPY stream for efficient bulk insert
+            const copyStream = client.query(copyFrom(
+                `COPY content.node (tdei_dataset_id, feature, requested_by) FROM STDIN WITH (FORMAT csv, DELIMITER '|', HEADER false)`
+            ));
+
+            // Use Node.js pipeline for proper stream handling with unzipper
+            const { pipeline } = require('stream');
+            const { promisify } = require('util');
+            const pipelineAsync = promisify(pipeline);
+
+            // Create a proper streaming pipeline
+            const jsonParser = parser();
+            const featurePicker = pick({ filter: 'features' });
+            const arrayStreamer = streamArray();
+
+            let processedCount = 0;
+            const batchSize = 1000;
+            let batchBuffer: any[] = [];
+
+            // Handle each feature as it streams
+            arrayStreamer.on('data', (data) => {
+                batchBuffer.push(data.value);
+
+                // Process batch when it reaches batchSize
+                if (batchBuffer.length >= batchSize) {
+                    const csvRows = batchBuffer.map((feature: any) => {
+                        const featureStr = JSON.stringify(feature)
+                            .replace(/"/g, '""')
+                            .replace(/\n/g, '\\n')
+                            .replace(/\r/g, '\\r');
+                        return `${tdei_dataset_id},"${featureStr}",${user_id}`;
+                    }).join('\n') + '\n';
+
+                    copyStream.write(csvRows);
+                    processedCount += batchBuffer.length;
+
+                    // Log progress
+                    if (processedCount % 5000 === 0) {
+                        console.log(`Processed ${processedCount} node features`);
+                    }
+
+                    batchBuffer = []; // Clear buffer
+                }
+            });
+
+            arrayStreamer.on('end', () => {
+                // Process remaining items in buffer
+                if (batchBuffer.length > 0) {
+                    const csvRows = batchBuffer.map((feature: any) => {
+                        const featureStr = JSON.stringify(feature)
+                            .replace(/"/g, '""')
+                            .replace(/\n/g, '\\n')
+                            .replace(/\r/g, '\\r');
+                        return `${tdei_dataset_id},"${featureStr}",${user_id}`;
+                    }).join('\n') + '\n';
+
+                    copyStream.write(csvRows);
+                    processedCount += batchBuffer.length;
+                }
+
+                console.log(`Successfully processed ${processedCount} node features`);
+                copyStream.end();
+            });
+
+            // Set up error handling
+            const handleError = (err: any) => {
+                console.error('Stream error in bulkInsertNodes:', err);
+                console.error('File path:', entry.path);
+                copyStream.destroy();
+            };
+
+            jsonParser.on('error', handleError);
+            featurePicker.on('error', handleError);
+            arrayStreamer.on('error', handleError);
+
+            // Create the pipeline: entry -> parser -> picker -> arrayStreamer
+            await pipelineAsync(
+                entry,
+                jsonParser,
+                featurePicker,
+                arrayStreamer
+            );
+
+            // Wait for COPY to complete
+            await new Promise<void>((resolve, reject) => {
+                copyStream.on('finish', resolve);
+                copyStream.on('error', reject);
+            });
+
+        } catch (error) {
+            console.error('Error in bulkInsertNodes:', error);
+            console.error('File path:', entry.path);
+            throw error;
+        }
+    }
+
+    /**
+     * Ultra-fast direct CSV COPY - streams CSV data directly to PostgreSQL COPY
+     * CSV file already contains: tdei_dataset_id, feature, requested_by
+     * No processing required - maximum performance
+     */
+    public async bulkInsertCSVDirect(
+        client: PoolClient,
+        tableName: string,
+        entry: any
+    ): Promise<void> {
+        try {
+            // Direct COPY - CSV already has correct format with headers
+            const copyStream = client.query(copyFrom(
+                `COPY content.${tableName} (tdei_dataset_id, feature, requested_by) FROM STDIN WITH (FORMAT csv, DELIMITER '|', HEADER true)`
+            ));
+
+            // Stream CSV data directly to PostgreSQL COPY - zero processing!
+            entry.on('data', (chunk: Buffer) => {
+                copyStream.write(chunk);
+            });
+
+            entry.on('end', () => {
+                copyStream.end();
+            });
+
+            entry.on('error', (err: any) => {
+                console.error(`Error reading CSV stream ${entry.path}:`, err);
+                copyStream.destroy();
+            });
+
+            // Wait for COPY to complete
+            await new Promise<void>((resolve, reject) => {
+                copyStream.on('finish', resolve);
+                copyStream.on('error', reject);
+            });
+
+        } catch (error) {
+            console.error(`Error in direct CSV insert for ${tableName}:`, error);
+            throw error;
+        }
+    }
+
+    /**
+     * Extract ZIP file to local directory and process CSV files
+     * This approach extracts ZIP to local folder first, then reads CSV files
+     */
+    public async processZIPToLocalCSV(message: QueueMessage, fileUploadPath: string) {
+        const tdei_dataset_id = message.data.tdei_dataset_id;
+        const user_id = message.data.user_id;
+        console.log('Processing ZIP to local CSV dataset:', tdei_dataset_id);
+
+        try {
+            console.log('Deleting existing records for dataset:', tdei_dataset_id);
+            const deleteRecordsQueryObject = {
+                text: `SELECT delete_dataset_records_by_id($1)`.replace(/\n/g, ""),
+                values: [tdei_dataset_id]
+            };
+            await dbClient.query(deleteRecordsQueryObject);
+
+            // Create local extraction directory
+            const fs = require('fs');
+            const path = require('path');
+            const extractDir = `/tmp/extract_${tdei_dataset_id}_${Date.now()}`;
+
+            // Create extraction directory
+            if (!fs.existsSync(extractDir)) {
+                fs.mkdirSync(extractDir, { recursive: true });
+            }
+
+            try {
+                // Extract ZIP file to local directory
+                console.log(`Extracting ZIP file to: ${extractDir}`);
+                const fileStream = await this.getFileStream(fileUploadPath);
+                const directory = fileStream.pipe(unzipper.Parse({ forceStream: true }));
+
+                for await (const entry of directory) {
+                    if (entry.type === 'File' && entry.path.endsWith('.csv') && !entry.path.includes('__MACOSX')) {
+                        const localFilePath = path.join(extractDir, path.basename(entry.path));
+                        const writeStream = fs.createWriteStream(localFilePath);
+
+                        await new Promise<void>((resolve, reject) => {
+                            entry.pipe(writeStream)
+                                .on('finish', resolve)
+                                .on('error', reject);
+                        });
+
+                        console.log(`Extracted: ${entry.path} -> ${localFilePath}`);
+                    } else {
+                        entry.autodrain();
+                    }
+                }
+
+                // Process extracted CSV files
+                await dbClient.runInTransaction(async (client) => {
+                    const files = fs.readdirSync(extractDir)
+                        .filter((file: string) => file.endsWith('.csv'))
+                        .map((file: string) => path.join(extractDir, file));
+
+                    console.time(`processExtractedCSVFiles ${tdei_dataset_id}`);
+                    const promises: Promise<void>[] = [];
+
+                    // Process each extracted CSV file
+                    for (const csvFilePath of files) {
+                        const fileName = path.basename(csvFilePath);
+
+                        if (fileName.includes('nodes')) {
+                            promises.push(this.bulkInsertCSVFromLocal(client, 'node', csvFilePath));
+                        } else if (fileName.includes('edges')) {
+                            promises.push(this.bulkInsertCSVFromLocal(client, 'edge', csvFilePath));
+                        } else {
+                            console.log(`Skipping unrecognized CSV file: ${fileName}`);
+                        }
+                    }
+
+                    // Wait for all CSV files to be processed in parallel
+                    await Promise.all(promises);
+                    console.timeEnd(`processExtractedCSVFiles ${tdei_dataset_id}`);
+                });
+
+                console.log(`ZIP to local CSV data loaded successfully for dataset: ${tdei_dataset_id}`);
+                await this.publishMessage(message, true, "ZIP to local CSV data loaded successfully");
+
+            } finally {
+                // Clean up extracted files
+                console.log(`Cleaning up extracted files from: ${extractDir}`);
+                try {
+                    const files = fs.readdirSync(extractDir);
+                    for (const file of files) {
+                        fs.unlinkSync(path.join(extractDir, file));
+                    }
+                    fs.rmdirSync(extractDir);
+                } catch (cleanupError) {
+                    console.error('Error cleaning up extracted files:', cleanupError);
+                }
+            }
+
+        } catch (error) {
+            console.error('Error processing ZIP to local CSV:', error);
+            await this.publishMessage(message, false, "Error processing ZIP to local CSV: " + error);
+        }
+    }
+
+    /**
+     * Ultra-fast local CSV file loading using PostgreSQL COPY
+     * Reads CSV files directly from local filesystem
+     */
+    public async bulkInsertCSVFromLocal(
+        client: PoolClient,
+        tableName: string,
+        csvFilePath: string
+    ): Promise<void> {
+        try {
+            const fs = require('fs');
+
+            // Check if file exists
+            if (!fs.existsSync(csvFilePath)) {
+                throw new Error(`CSV file not found: ${csvFilePath}`);
+            }
+
+            // Direct COPY - CSV already has correct format with headers
+            const copyStream = client.query(copyFrom(
+                `COPY content.${tableName} (tdei_dataset_id, feature, requested_by) FROM STDIN WITH (FORMAT csv, DELIMITER '|', HEADER true)`
+            ));
+
+            // Create read stream from local file
+            const fileStream = fs.createReadStream(csvFilePath);
+
+            // Stream CSV data directly to PostgreSQL COPY - zero processing!
+            fileStream.on('data', (chunk: Buffer) => {
+                copyStream.write(chunk);
+            });
+
+            fileStream.on('end', () => {
+                copyStream.end();
+            });
+
+            fileStream.on('error', (err: any) => {
+                console.error(`Error reading local CSV file ${csvFilePath}:`, err);
+                copyStream.destroy();
+            });
+
+            // Wait for COPY to complete
+            await new Promise<void>((resolve, reject) => {
+                copyStream.on('finish', resolve);
+                copyStream.on('error', reject);
+            });
+
+        } catch (error) {
+            console.error(`Error in local CSV insert for ${tableName}:`, error);
+            throw error;
+        }
+    }
+
+    // ========================================
+    // BENCHMARK METHODS - 4 Different Approaches
+    // ========================================
+
+    /**
+     * BENCHMARK 1: Original Batch Processing Approach
+     * Reads ZIP file, extracts GeoJSON, parses JSON, processes batch by batch
+     */
+    public async benchmarkBatchProcessing(message: QueueMessage, fileUploadPath: string) {
+        const tdei_dataset_id = message.data.tdei_dataset_id;
+        const user_id = message.data.user_id;
+        console.log('🚀 BENCHMARK 1: Starting Batch Processing for dataset:', tdei_dataset_id);
+
+        try {
+            console.log('Deleting existing records for dataset:', tdei_dataset_id);
+            const deleteRecordsQueryObject = {
+                text: `SELECT delete_dataset_records_by_id($1)`.replace(/\n/g, ""),
+                values: [tdei_dataset_id]
+            };
+            await dbClient.query(deleteRecordsQueryObject);
+
+            await dbClient.runInTransaction(async (client) => {
+                const directory = (await this.getFileStream(fileUploadPath)).pipe(unzipper.Parse({ forceStream: true }));
+
+                console.time(`BENCHMARK-1-BatchProcessing ${tdei_dataset_id}`);
+                let processedFiles = 0;
+
+                for await (const entry of directory) {
+                    if (entry.type === 'File' && entry.path.endsWith('.geojson') && !entry.path.includes('__MACOSX')) {
+                        try {
+                            console.log(`Processing file: ${entry.path}`);
+
+                            // Read entire file into memory and parse JSON
+                            const content = await entry.buffer();
+                            const jsonData = JSON.parse(content.toString('utf8'));
+
+                            if (entry.path.includes('nodes')) {
+                                await this.bulkInsertNodes(client, tdei_dataset_id, user_id, jsonData);
+                                processedFiles++;
+                            } else if (entry.path.includes('edges')) {
+                                await this.bulkInsertEdges(client, tdei_dataset_id, user_id, jsonData);
+                                processedFiles++;
+                            } else {
+                                entry.autodrain();
+                            }
+                        } catch (error) {
+                            console.error(`Error processing file ${entry.path}:`, error);
+                            throw error;
+                        }
+                    } else {
+                        entry.autodrain();
+                    }
+                }
+
+                console.log(`Successfully processed ${processedFiles} GeoJSON files`);
+                console.timeEnd(`BENCHMARK-1-BatchProcessing ${tdei_dataset_id}`);
+            });
+
+            console.log(`✅ BENCHMARK 1: Batch processing completed for dataset: ${tdei_dataset_id}`);
+            await this.publishMessage(message, true, "BENCHMARK 1: Batch processing completed successfully");
+
+        } catch (error) {
+            console.error('❌ BENCHMARK 1: Error in batch processing:', error);
+            await this.publishMessage(message, false, "BENCHMARK 1: Error in batch processing: " + error);
+        }
+    }
+
+    /**
+     * BENCHMARK 2: GeoJSON Streaming with COPY
+     * Streams GeoJSON files and uses PostgreSQL COPY for bulk insert
+     */
+    public async benchmarkGeoJSONStreaming(message: QueueMessage, fileUploadPath: string) {
+        const tdei_dataset_id = message.data.tdei_dataset_id;
+        const user_id = message.data.user_id;
+        console.log('🚀 BENCHMARK 2: Starting GeoJSON Streaming for dataset:', tdei_dataset_id);
+
+        try {
+            console.log('Deleting existing records for dataset:', tdei_dataset_id);
+            const deleteRecordsQueryObject = {
+                text: `SELECT delete_dataset_records_by_id($1)`.replace(/\n/g, ""),
+                values: [tdei_dataset_id]
+            };
+            await dbClient.query(deleteRecordsQueryObject);
+
+            await dbClient.runInTransaction(async (client) => {
+                const directory = (await this.getFileStream(fileUploadPath)).pipe(unzipper.Parse({ forceStream: true }));
+
+                console.time(`BENCHMARK-2-GeoJSONStreaming ${tdei_dataset_id}`);
+                let processedFiles = 0;
+
+                for await (const entry of directory) {
+                    if (entry.type === 'File' && entry.path.endsWith('.geojson') && !entry.path.includes('__MACOSX')) {
+                        try {
+                            console.log(`Processing file: ${entry.path}`);
+
+                            if (entry.path.includes('nodes')) {
+                                await this.bulkInsertNodes2(client, tdei_dataset_id, user_id, entry);
+                                processedFiles++;
+                            } else if (entry.path.includes('edges')) {
+                                // For edges, we need to use the original method since bulkInsertEdges2 doesn't exist
+                                const content = await entry.buffer();
+                                const jsonData = JSON.parse(content.toString('utf8'));
+                                await this.bulkInsertEdges(client, tdei_dataset_id, user_id, jsonData);
+                                processedFiles++;
+                            } else {
+                                entry.autodrain();
+                            }
+                        } catch (error) {
+                            console.error(`Error processing file ${entry.path}:`, error);
+                            throw error;
+                        }
+                    } else {
+                        entry.autodrain();
+                    }
+                }
+
+                console.log(`Successfully processed ${processedFiles} GeoJSON files`);
+                console.timeEnd(`BENCHMARK-2-GeoJSONStreaming ${tdei_dataset_id}`);
+            });
+
+            console.log(`✅ BENCHMARK 2: GeoJSON streaming completed for dataset: ${tdei_dataset_id}`);
+            await this.publishMessage(message, true, "BENCHMARK 2: GeoJSON streaming completed successfully");
+
+        } catch (error) {
+            console.error('❌ BENCHMARK 2: Error in GeoJSON streaming:', error);
+            await this.publishMessage(message, false, "BENCHMARK 2: Error in GeoJSON streaming: " + error);
+        }
+    }
+
+    /**
+     * BENCHMARK 3: CSV Streaming from ZIP
+     * Streams CSV files directly from ZIP using PostgreSQL COPY
+     */
+    public async benchmarkCSVStreaming(message: QueueMessage, fileUploadPath: string) {
+        const tdei_dataset_id = message.data.tdei_dataset_id;
+        const user_id = message.data.user_id;
+        console.log('🚀 BENCHMARK 3: Starting CSV Streaming for dataset:', tdei_dataset_id);
+
+        try {
+            console.log('Deleting existing records for dataset:', tdei_dataset_id);
+            const deleteRecordsQueryObject = {
+                text: `SELECT delete_dataset_records_by_id($1)`.replace(/\n/g, ""),
+                values: [tdei_dataset_id]
+            };
+            await dbClient.query(deleteRecordsQueryObject);
+
+            await dbClient.runInTransaction(async (client) => {
+                const directory = (await this.getFileStream(fileUploadPath)).pipe(unzipper.Parse({ forceStream: true }));
+
+                console.time(`BENCHMARK-3-CSVStreaming ${tdei_dataset_id}`);
+                let processedFiles = 0;
+
+                for await (const entry of directory) {
+                    if (entry.type === 'File' && entry.path.endsWith('.csv') && !entry.path.includes('__MACOSX')) {
+                        try {
+                            console.log(`Processing CSV file: ${entry.path}`);
+
+                            if (entry.path.includes('nodes')) {
+                                await this.bulkInsertCSVDirect(client, 'node', entry);
+                                processedFiles++;
+                            } else if (entry.path.includes('edges')) {
+                                await this.bulkInsertCSVDirect(client, 'edge', entry);
+                                processedFiles++;
+                            } else {
+                                entry.autodrain();
+                            }
+                        } catch (error) {
+                            console.error(`Error processing CSV file ${entry.path}:`, error);
+                            throw error;
+                        }
+                    } else {
+                        entry.autodrain();
+                    }
+                }
+
+                console.log(`Successfully processed ${processedFiles} CSV files`);
+                console.timeEnd(`BENCHMARK-3-CSVStreaming ${tdei_dataset_id}`);
+            });
+
+            console.log(`✅ BENCHMARK 3: CSV streaming completed for dataset: ${tdei_dataset_id}`);
+            await this.publishMessage(message, true, "BENCHMARK 3: CSV streaming completed successfully");
+
+        } catch (error) {
+            console.error('❌ BENCHMARK 3: Error in CSV streaming:', error);
+            await this.publishMessage(message, false, "BENCHMARK 3: Error in CSV streaming: " + error);
+        }
+    }
+
+    /**
+     * BENCHMARK 4: CSV Local Processing
+     * Downloads ZIP to local, extracts CSV files, then processes locally
+     */
+    public async benchmarkCSVLocal(message: QueueMessage, fileUploadPath: string) {
+        const tdei_dataset_id = message.data.tdei_dataset_id;
+        const user_id = message.data.user_id;
+        console.log('🚀 BENCHMARK 4: Starting CSV Local Processing for dataset:', tdei_dataset_id);
+
+        try {
+            console.log('Deleting existing records for dataset:', tdei_dataset_id);
+            const deleteRecordsQueryObject = {
+                text: `SELECT delete_dataset_records_by_id($1)`.replace(/\n/g, ""),
+                values: [tdei_dataset_id]
+            };
+            await dbClient.query(deleteRecordsQueryObject);
+
+            // Create local extraction directory
+            const fs = require('fs');
+            const path = require('path');
+            const extractDir = `/tmp/benchmark_extract_${tdei_dataset_id}_${Date.now()}`;
+
+            // Create extraction directory
+            if (!fs.existsSync(extractDir)) {
+                fs.mkdirSync(extractDir, { recursive: true });
+            }
+
+            try {
+                // Extract ZIP file to local directory
+                console.log(`Extracting ZIP file to: ${extractDir}`);
+                const fileStream = await this.getFileStream(fileUploadPath);
+                const directory = fileStream.pipe(unzipper.Parse({ forceStream: true }));
+
+                for await (const entry of directory) {
+                    if (entry.type === 'File' && entry.path.endsWith('.csv') && !entry.path.includes('__MACOSX')) {
+                        const localFilePath = path.join(extractDir, path.basename(entry.path));
+                        const writeStream = fs.createWriteStream(localFilePath);
+
+                        await new Promise<void>((resolve, reject) => {
+                            entry.pipe(writeStream)
+                                .on('finish', resolve)
+                                .on('error', reject);
+                        });
+
+                        console.log(`Extracted: ${entry.path} -> ${localFilePath}`);
+                    } else {
+                        entry.autodrain();
+                    }
+                }
+
+                // Process extracted CSV files
+                await dbClient.runInTransaction(async (client) => {
+                    const files = fs.readdirSync(extractDir)
+                        .filter((file: string) => file.endsWith('.csv'))
+                        .map((file: string) => path.join(extractDir, file));
+
+                    console.time(`BENCHMARK-4-CSVLocal ${tdei_dataset_id}`);
+                    const promises: Promise<void>[] = [];
+
+                    // Process each extracted CSV file
+                    for (const csvFilePath of files) {
+                        const fileName = path.basename(csvFilePath);
+
+                        if (fileName.includes('nodes')) {
+                            promises.push(this.bulkInsertCSVFromLocal(client, 'node', csvFilePath));
+                        } else if (fileName.includes('edges')) {
+                            promises.push(this.bulkInsertCSVFromLocal(client, 'edge', csvFilePath));
+                        } else {
+                            console.log(`Skipping unrecognized CSV file: ${fileName}`);
+                        }
+                    }
+
+                    // Wait for all CSV files to be processed in parallel
+                    await Promise.all(promises);
+                    console.timeEnd(`BENCHMARK-4-CSVLocal ${tdei_dataset_id}`);
+                });
+
+                console.log(`✅ BENCHMARK 4: CSV local processing completed for dataset: ${tdei_dataset_id}`);
+                await this.publishMessage(message, true, "BENCHMARK 4: CSV local processing completed successfully");
+
+            } finally {
+                // Clean up extracted files
+                console.log(`Cleaning up extracted files from: ${extractDir}`);
+                try {
+                    const files = fs.readdirSync(extractDir);
+                    for (const file of files) {
+                        fs.unlinkSync(path.join(extractDir, file));
+                    }
+                    fs.rmdirSync(extractDir);
+                } catch (cleanupError) {
+                    console.error('Error cleaning up extracted files:', cleanupError);
+                }
+            }
+
+        } catch (error) {
+            console.error('❌ BENCHMARK 4: Error in CSV local processing:', error);
+            await this.publishMessage(message, false, "BENCHMARK 4: Error in CSV local processing: " + error);
         }
     }
 
