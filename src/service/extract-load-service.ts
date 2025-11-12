@@ -91,20 +91,16 @@ export class ExtractLoadService {
                 const promises = [];
                 console.time(`processFiles ${tdei_dataset_id}`);
                 for await (const entry of directory) {
-                    if (entry.type === 'File' && entry.path.endsWith('.geojson')) {
+                    if (entry.type === 'File' && entry.path.endsWith('.geojson') && !entry.path.includes('__MACOSX/')) {
                         const content = await entry.buffer();
                         let jsonData;
                         try {
                             jsonData = JSON.parse(content.toString('utf8'));
                         } catch (error) {
                             console.error("Unable to parse content as JSON:", entry.path, error);
-                            if (entry.path.includes('nodes') || entry.path.includes('edges')
-                                || entry.path.includes('points') || entry.path.includes('lines')
-                                || entry.path.includes('polygons') || entry.path.includes('zones')) {
-                                throw new Error("Unable to parse content as JSON:" + entry.path + error);
-                            }
-                            continue;
+                            throw new Error("Unable to parse content as JSON:" + entry.path + error);
                         }
+
                         if (entry.path.includes('nodes')) {
                             promises.push(this.bulkInsertNodes(client, tdei_dataset_id, user_id, jsonData));
                         } else if (entry.path.includes('edges')) {
