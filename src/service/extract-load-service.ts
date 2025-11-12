@@ -97,7 +97,12 @@ export class ExtractLoadService {
                         try {
                             jsonData = JSON.parse(content.toString('utf8'));
                         } catch (error) {
-                            console.error("Unable to parse content as JSON:", content.toString('utf8'));
+                            console.error("Unable to parse content as JSON:", entry.path, error);
+                            if (entry.path.includes('nodes') || entry.path.includes('edges')
+                                || entry.path.includes('points') || entry.path.includes('lines')
+                                || entry.path.includes('polygons') || entry.path.includes('zones')) {
+                                throw new Error("Unable to parse content as JSON:" + entry.path + error);
+                            }
                             continue;
                         }
                         if (entry.path.includes('nodes')) {
@@ -117,8 +122,6 @@ export class ExtractLoadService {
                             promises.push(this.bulkInsertExtension(client, tdei_dataset_id, user_id, jsonData, entry));
                         }
 
-                    } else {
-                        entry.autodrain();
                     }
                 }
                 await Promise.all(promises);
