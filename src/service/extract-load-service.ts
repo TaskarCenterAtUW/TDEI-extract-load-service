@@ -168,9 +168,14 @@ export class ExtractLoadService {
                 const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
 
+                // Strip Z coordinates from geometries
+                const processedBatch = batch.map((record: any) => {
+                    return this.processGeometryElevation(record, 'zones');
+                });
+
                 // Parameterized query
-                const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
-                const placeholders = batch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
+                const values = processedBatch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
+                const placeholders = processedBatch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
 
                 const queryObject = {
                     text: `
@@ -212,9 +217,14 @@ export class ExtractLoadService {
                 const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
 
+                // Strip Z coordinates from geometries
+                const processedBatch = batch.map((record: any) => {
+                    return this.processGeometryElevation(record, 'edges');
+                });
+
                 // Parameterized query
-                const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
-                const placeholders = batch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
+                const values = processedBatch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
+                const placeholders = processedBatch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
 
                 const queryObject = {
                     text: `
@@ -256,9 +266,14 @@ export class ExtractLoadService {
                 const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
 
+                // Strip Z coordinates from geometries (extension files can contain mix of all geometry types)
+                const processedBatch = batch.map((record: any) => {
+                    return this.processGeometryElevation(record, 'extension');
+                });
+
                 // Parameterized query
-                const values = batch.flatMap((record: any) => [tdei_dataset_id, ext_file_id, record, user_id]);
-                const placeholders = batch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++}, $${counter++})`).join(', ');
+                const values = processedBatch.flatMap((record: any) => [tdei_dataset_id, ext_file_id, record, user_id]);
+                const placeholders = processedBatch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++}, $${counter++})`).join(', ');
 
                 const queryObject = {
                     text: `
@@ -323,9 +338,133 @@ export class ExtractLoadService {
     }
 
     /**
- * Inserts a batch of node records into the 'content.node' table.
- * 
- * @param client - The database client used to execute the query.
+     * Counts existing ext:elevation* properties in feature properties
+     * @param properties - Feature properties object
+     * @returns Count of existing ext:elevation* properties
+     */
+    private countExistingElevationProperties(properties: any): number {
+        if (!properties || typeof properties !== 'object') {
+            return 0;
+        }
+
+        let count = 0;
+        for (const key in properties) {
+            if (key.startsWith('ext:elevation')) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Strips Z coordinate from geometry coordinates to make it 2D
+     * @param coordinates - Geometry coordinates (can be nested arrays)
+     * @returns 2D coordinates without Z dimension
+     */
+    private stripZCoordinate(coordinates: any): any {
+        if (!Array.isArray(coordinates)) {
+            return coordinates;
+        }
+
+        // Check if this is a coordinate pair/triple [x, y] or [x, y, z]
+        if (coordinates.length >= 2 && typeof coordinates[0] === 'number' && typeof coordinates[1] === 'number') {
+            // This is a coordinate pair/triple - return only [x, y]
+            return [coordinates[0], coordinates[1]];
+        }
+
+        // This is an array of coordinates - recursively process each
+        return coordinates.map((coord: any) => this.stripZCoordinate(coord));
+    }
+
+    /**
+     * Extracts a single elevation value (Z coordinate) from geometry coordinates
+     * Used for nodes/points to store elevation as a property
+     * Returns the first Z coordinate found in the geometry
+     * @param coords - Geometry coordinates (can be nested arrays)
+     * @returns First Z coordinate value found, or null if none found
+     */
+    private extractElevationValue(coords: any): number | null {
+        if (!Array.isArray(coords)) {
+            return null;
+        }
+
+        // Check if this is a coordinate pair/triple [x, y] or [x, y, z]
+        if (coords.length >= 2 && typeof coords[0] === 'number' && typeof coords[1] === 'number') {
+            // This is a coordinate pair/triple
+            if (coords.length >= 3 && typeof coords[2] === 'number') {
+                return coords[2]; // Found Z coordinate
+            }
+            return null; // No Z coordinate in this pair
+        }
+
+        // This is an array of coordinates - recursively search each
+        for (const coord of coords) {
+            const z = this.extractElevationValue(coord);
+            if (z !== null) {
+                return z;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Extracts elevation (Z coordinate) from GeoJSON geometry for nodes/points
+     * For other types, strips Z coordinate to make 2D geometry
+     * @param feature - GeoJSON feature object
+     * @param featureType - Type of feature: 'nodes' | 'points' | 'edges' | 'lines' | 'polygons' | 'zones' | 'extension'
+     * @returns Modified feature with elevation property (for nodes/points) or 2D geometry (for others)
+     */
+    private processGeometryElevation(feature: any, featureType: string): any {
+        if (!feature || !feature.geometry || !feature.geometry.coordinates) {
+            return feature;
+        }
+
+        const geometry = feature.geometry;
+        const coordinates = geometry.coordinates;
+        const isNodeOrPoint = featureType === 'nodes' || featureType === 'points';
+
+        try {
+            if (isNodeOrPoint) {
+                // For nodes and points: extract elevation from any geometry type
+                // Find first Z coordinate in the geometry
+                const elevation = this.extractElevationValue(coordinates);
+
+                // Strip Z coordinates from geometry - DB stores 2D only
+                feature.geometry.coordinates = this.stripZCoordinate(coordinates);
+
+                    // Add elevation property if found & not 0 
+                if (elevation !== null && elevation !== undefined && elevation !== 0) {
+                    if (!feature.properties) {
+                        feature.properties = {};
+                    }
+
+                    // Count existing ext:elevation* properties
+                    const existingCount = this.countExistingElevationProperties(feature.properties);
+
+                    // Determine property name: ext:elevation, ext:elevation_1, ext:elevation_2, etc.
+                    const propertyName = existingCount === 0
+                        ? 'ext:elevation'
+                        : `ext:elevation_${existingCount}`;
+
+                    feature.properties[propertyName] = elevation;
+                }
+            } else {
+                // For edges, lines, polygons, zones: strip Z coordinate to make 2D
+                feature.geometry.coordinates = this.stripZCoordinate(coordinates);
+            }
+        } catch (error) {
+            // If processing fails, return feature as-is
+            console.error('Error processing geometry elevation:', error);
+        }
+
+        return feature;
+    }
+
+    /**
+* Inserts a batch of node records into the 'content.node' table.
+* 
+* @param client - The database client used to execute the query.
  * @param tdei_dataset_id - The ID of the dataset.
  * @param user_id - The ID of the user who requested the insertion.
  * @param jsonData - The JSON data containing the node records.
@@ -345,9 +484,15 @@ export class ExtractLoadService {
             while (jsonData.features.length > 0) {
                 const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
+
+                // Extract elevation from geometries and add ext:elevation property (nodes only)
+                const processedBatch = batch.map((record: any) => {
+                    return this.processGeometryElevation(record, 'nodes');
+                });
+
                 // Parameterized query
-                const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
-                const placeholders = batch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
+                const values = processedBatch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
+                const placeholders = processedBatch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
 
                 const queryObject = {
                     text: `
@@ -387,9 +532,15 @@ export class ExtractLoadService {
             while (jsonData.features.length > 0) {
                 const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
+
+                // Extract elevation from geometries and add ext:elevation property (points only)
+                const processedBatch = batch.map((record: any) => {
+                    return this.processGeometryElevation(record, 'points');
+                });
+
                 // Parameterized query
-                const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
-                const placeholders = batch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
+                const values = processedBatch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
+                const placeholders = processedBatch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
 
                 const queryObject = {
                     text: `
@@ -428,9 +579,15 @@ export class ExtractLoadService {
             while (jsonData.features.length > 0) {
                 const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
+
+                // Strip Z coordinates from geometries (polygons store 2D only)
+                const processedBatch = batch.map((record: any) => {
+                    return this.processGeometryElevation(record, 'polygons');
+                });
+
                 // Parameterized query
-                const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
-                const placeholders = batch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
+                const values = processedBatch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
+                const placeholders = processedBatch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
 
                 const queryObject = {
                     text: `
@@ -469,9 +626,15 @@ export class ExtractLoadService {
             while (jsonData.features.length > 0) {
                 const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
+
+                // Strip Z coordinates from geometries
+                const processedBatch = batch.map((record: any) => {
+                    return this.processGeometryElevation(record, 'lines');
+                });
+
                 // Parameterized query
-                const values = batch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
-                const placeholders = batch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
+                const values = processedBatch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
+                const placeholders = processedBatch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
 
                 const queryObject = {
                     text: `
