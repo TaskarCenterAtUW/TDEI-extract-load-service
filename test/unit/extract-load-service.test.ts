@@ -466,6 +466,89 @@ describe('ExtractLoadService', () => {
             expect(querySpy).toHaveBeenCalled();
         });
 
+        it('should strip Z coordinates from mixed geometry types in extension files', async () => {
+            // Arrange
+            const tdei_dataset_id = 'dataset123';
+            const user_id = 'user123';
+            const jsonData = {
+                features: [
+                    {
+                        type: 'Feature',
+                        geometry: {
+                            type: 'Point',
+                            coordinates: [-122.1, 47.6, 100.0] // 3D Point
+                        },
+                        properties: { id: 1, name: 'Point Feature' }
+                    },
+                    {
+                        type: 'Feature',
+                        geometry: {
+                            type: 'LineString',
+                            coordinates: [
+                                [-122.2, 47.7, 200.0],
+                                [-122.3, 47.8, 300.0]
+                            ] // 3D LineString
+                        },
+                        properties: { id: 2, name: 'LineString Feature' }
+                    },
+                    {
+                        type: 'Feature',
+                        geometry: {
+                            type: 'Polygon',
+                            coordinates: [
+                                [
+                                    [-122.4, 47.9, 400.0],
+                                    [-122.5, 48.0, 500.0],
+                                    [-122.4, 47.9, 400.0]
+                                ]
+                            ] // 3D Polygon
+                        },
+                        properties: { id: 3, name: 'Polygon Feature' }
+                    }
+                ],
+            };
+
+            const queryMock = jest.fn().mockResolvedValue({
+                rows: [{ id: 1 }]
+            });
+            const querySpy = jest.spyOn(dbClient, 'executeQuery').mockImplementation(queryMock);
+
+            const extractLoadService = new ExtractLoadService();
+            extractLoadService.updateAdditionalFileData = jest.fn();
+            extractLoadService.updateExtensionFileData = jest.fn().mockResolvedValue(1);
+
+            // Act
+            await extractLoadService.bulkInsertExtension({} as any, tdei_dataset_id, user_id, jsonData, { path: "test.geojson" });
+
+            // Assert - Check that Z coordinates are stripped from all geometries
+            const queryObject = querySpy.mock.calls[0][1] as any;
+            const insertedFeatures = queryObject.values;
+
+            // Point feature (index 2 in values array: tdei_dataset_id, ext_file_id, record, user_id)
+            const pointFeature = insertedFeatures[2];
+            expect(pointFeature.geometry.coordinates).toEqual([-122.1, 47.6]); // Z stripped
+            expect(pointFeature.properties['ext:elevation']).toBeUndefined(); // No elevation property
+
+            // LineString feature
+            const lineFeature = insertedFeatures[6];
+            expect(lineFeature.geometry.coordinates).toEqual([
+                [-122.2, 47.7],
+                [-122.3, 47.8]
+            ]); // Z stripped
+            expect(lineFeature.properties['ext:elevation']).toBeUndefined();
+
+            // Polygon feature
+            const polygonFeature = insertedFeatures[10];
+            expect(polygonFeature.geometry.coordinates).toEqual([
+                [
+                    [-122.4, 47.9],
+                    [-122.5, 48.0],
+                    [-122.4, 47.9]
+                ]
+            ]); // Z stripped
+            expect(polygonFeature.properties['ext:elevation']).toBeUndefined();
+        });
+
         it('should throw an error if there is an error inserting lines records', async () => {
             // Arrange
             const tdei_dataset_id = 'dataset123';

@@ -266,9 +266,14 @@ export class ExtractLoadService {
                 const batch = jsonData.features.splice(0, batchSize);
                 let counter = 1;
 
+                // Strip Z coordinates from geometries (extension files can contain mix of all geometry types)
+                const processedBatch = batch.map((record: any) => {
+                    return this.processGeometryElevation(record, 'extension');
+                });
+
                 // Parameterized query
-                const values = batch.flatMap((record: any) => [tdei_dataset_id, ext_file_id, record, user_id]);
-                const placeholders = batch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++}, $${counter++})`).join(', ');
+                const values = processedBatch.flatMap((record: any) => [tdei_dataset_id, ext_file_id, record, user_id]);
+                const placeholders = processedBatch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++}, $${counter++})`).join(', ');
 
                 const queryObject = {
                     text: `
@@ -407,7 +412,7 @@ export class ExtractLoadService {
      * Extracts elevation (Z coordinate) from GeoJSON geometry for nodes/points
      * For other types, strips Z coordinate to make 2D geometry
      * @param feature - GeoJSON feature object
-     * @param featureType - Type of feature: 'nodes' | 'points' | 'edges' | 'lines' | 'polygons' | 'zones'
+     * @param featureType - Type of feature: 'nodes' | 'points' | 'edges' | 'lines' | 'polygons' | 'zones' | 'extension'
      * @returns Modified feature with elevation property (for nodes/points) or 2D geometry (for others)
      */
     private processGeometryElevation(feature: any, featureType: string): any {
