@@ -433,8 +433,8 @@ export class ExtractLoadService {
                 // Strip Z coordinates from geometry - DB stores 2D only
                 feature.geometry.coordinates = this.stripZCoordinate(coordinates);
 
-                // Add elevation property if found
-                if (elevation !== null) {
+                    // Add elevation property if found & not 0 
+                if (elevation !== null && elevation !== undefined && elevation !== 0) {
                     if (!feature.properties) {
                         feature.properties = {};
                     }
