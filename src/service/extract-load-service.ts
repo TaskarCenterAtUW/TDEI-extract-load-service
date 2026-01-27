@@ -347,13 +347,7 @@ export class ExtractLoadService {
             return 0;
         }
 
-        let count = 0;
-        for (const key in properties) {
-            if (key.startsWith('ext:elevation')) {
-                count++;
-            }
-        }
-        return count;
+        return Object.keys(properties).filter(key => key.startsWith('ext:elevation')).length;
     }
 
     /**
@@ -377,35 +371,38 @@ export class ExtractLoadService {
     }
 
     /**
-     * Extracts a single elevation value (Z coordinate) from geometry coordinates
-     * Used for nodes/points to store elevation as a property
-     * Returns the first Z coordinate found in the geometry
-     * @param coords - Geometry coordinates (can be nested arrays)
-     * @returns First Z coordinate value found, or null if none found
+     * Strips Z coordinates and extracts elevation in a single pass
+     * This avoids double traversal of the coordinate tree
+     * @param coordinates - Geometry coordinates (can be nested arrays)
+     * @returns Object with stripped coordinates and extracted elevation value
      */
-    private extractElevationValue(coords: any): number | null {
-        if (!Array.isArray(coords)) {
-            return null;
+    private stripZAndExtractElevation(coordinates: any): { stripped: any; elevation: number | null } {
+        if (!Array.isArray(coordinates)) {
+            return { stripped: coordinates, elevation: null };
         }
 
         // Check if this is a coordinate pair/triple [x, y] or [x, y, z]
-        if (coords.length >= 2 && typeof coords[0] === 'number' && typeof coords[1] === 'number') {
+        if (coordinates.length >= 2 && typeof coordinates[0] === 'number' && typeof coordinates[1] === 'number') {
             // This is a coordinate pair/triple
-            if (coords.length >= 3 && typeof coords[2] === 'number') {
-                return coords[2]; // Found Z coordinate
-            }
-            return null; // No Z coordinate in this pair
+            const stripped = [coordinates[0], coordinates[1]];
+            const elevation = (coordinates.length >= 3 && typeof coordinates[2] === 'number')
+                ? coordinates[2]
+                : null;
+            return { stripped, elevation };
         }
 
-        // This is an array of coordinates - recursively search each
-        for (const coord of coords) {
-            const z = this.extractElevationValue(coord);
-            if (z !== null) {
-                return z;
+        // This is an array of coordinates - recursively process each
+        let foundElevation: number | null = null;
+        const stripped = coordinates.map((coord: any) => {
+            const result = this.stripZAndExtractElevation(coord);
+            // Capture first elevation found (short-circuit after first find)
+            if (foundElevation === null && result.elevation !== null) {
+                foundElevation = result.elevation;
             }
-        }
+            return result.stripped;
+        });
 
-        return null;
+        return { stripped, elevation: foundElevation };
     }
 
     /**
@@ -426,14 +423,11 @@ export class ExtractLoadService {
 
         try {
             if (isNodeOrPoint) {
-                // For nodes and points: extract elevation from any geometry type
-                // Find first Z coordinate in the geometry
-                const elevation = this.extractElevationValue(coordinates);
+                // For nodes and points: extract elevation and strip Z in a single pass
+                const { stripped, elevation } = this.stripZAndExtractElevation(coordinates);
+                feature.geometry.coordinates = stripped;
 
-                // Strip Z coordinates from geometry - DB stores 2D only
-                feature.geometry.coordinates = this.stripZCoordinate(coordinates);
-
-                    // Add elevation property if found & not 0 
+                // Add elevation property if found & not 0 
                 if (elevation !== null && elevation !== undefined && elevation !== 0) {
                     if (!feature.properties) {
                         feature.properties = {};
@@ -450,7 +444,7 @@ export class ExtractLoadService {
                     feature.properties[propertyName] = elevation;
                 }
             } else {
-                // For edges, lines, polygons, zones: strip Z coordinate to make 2D
+                // For edges, lines, polygons, zones, extension: strip Z coordinate to make 2D
                 feature.geometry.coordinates = this.stripZCoordinate(coordinates);
             }
         } catch (error) {
