@@ -614,6 +614,27 @@ describe('ExtractLoadService', () => {
                 expect(insertedFeature.properties['ext:elevation']).toBe(123.45);
             });
 
+            it('should not add elevation property when Z is 0', async () => {
+                const jsonData = {
+                    features: [
+                        {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'Point',
+                                coordinates: [-122.1355703, 47.6458165, 0]
+                            },
+                            properties: { _id: 'node2' }
+                        }
+                    ]
+                };
+
+                await extractLoadService.bulkInsertNodes(mockClient, 'dataset123', 'user123', jsonData);
+
+                const insertedFeature = executeQuerySpy.mock.calls[0][1].values[1];
+                expect(insertedFeature.geometry.coordinates).toEqual([-122.1355703, 47.6458165]);
+                expect(insertedFeature.properties['ext:elevation']).toBeUndefined();
+            });
+
             it('should handle existing ext:elevation property and use ext:elevation_1', async () => {
                 const jsonData = {
                     features: [
