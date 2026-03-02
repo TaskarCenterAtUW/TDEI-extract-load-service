@@ -466,6 +466,89 @@ describe('ExtractLoadService', () => {
             expect(querySpy).toHaveBeenCalled();
         });
 
+        it('should strip Z coordinates from mixed geometry types in extension files', async () => {
+            // Arrange
+            const tdei_dataset_id = 'dataset123';
+            const user_id = 'user123';
+            const jsonData = {
+                features: [
+                    {
+                        type: 'Feature',
+                        geometry: {
+                            type: 'Point',
+                            coordinates: [-122.1, 47.6, 100.0] // 3D Point
+                        },
+                        properties: { id: 1, name: 'Point Feature' }
+                    },
+                    {
+                        type: 'Feature',
+                        geometry: {
+                            type: 'LineString',
+                            coordinates: [
+                                [-122.2, 47.7, 200.0],
+                                [-122.3, 47.8, 300.0]
+                            ] // 3D LineString
+                        },
+                        properties: { id: 2, name: 'LineString Feature' }
+                    },
+                    {
+                        type: 'Feature',
+                        geometry: {
+                            type: 'Polygon',
+                            coordinates: [
+                                [
+                                    [-122.4, 47.9, 400.0],
+                                    [-122.5, 48.0, 500.0],
+                                    [-122.4, 47.9, 400.0]
+                                ]
+                            ] // 3D Polygon
+                        },
+                        properties: { id: 3, name: 'Polygon Feature' }
+                    }
+                ],
+            };
+
+            const queryMock = jest.fn().mockResolvedValue({
+                rows: [{ id: 1 }]
+            });
+            const querySpy = jest.spyOn(dbClient, 'executeQuery').mockImplementation(queryMock);
+
+            const extractLoadService = new ExtractLoadService();
+            extractLoadService.updateAdditionalFileData = jest.fn();
+            extractLoadService.updateExtensionFileData = jest.fn().mockResolvedValue(1);
+
+            // Act
+            await extractLoadService.bulkInsertExtension({} as any, tdei_dataset_id, user_id, jsonData, { path: "test.geojson" });
+
+            // Assert - Check that Z coordinates are stripped from all geometries
+            const queryObject = querySpy.mock.calls[0][1] as any;
+            const insertedFeatures = queryObject.values;
+
+            // Point feature (index 2 in values array: tdei_dataset_id, ext_file_id, record, user_id)
+            const pointFeature = insertedFeatures[2];
+            expect(pointFeature.geometry.coordinates).toEqual([-122.1, 47.6]); // Z stripped
+            expect(pointFeature.properties['ext:elevation']).toBeUndefined(); // No elevation property
+
+            // LineString feature
+            const lineFeature = insertedFeatures[6];
+            expect(lineFeature.geometry.coordinates).toEqual([
+                [-122.2, 47.7],
+                [-122.3, 47.8]
+            ]); // Z stripped
+            expect(lineFeature.properties['ext:elevation']).toBeUndefined();
+
+            // Polygon feature
+            const polygonFeature = insertedFeatures[10];
+            expect(polygonFeature.geometry.coordinates).toEqual([
+                [
+                    [-122.4, 47.9],
+                    [-122.5, 48.0],
+                    [-122.4, 47.9]
+                ]
+            ]); // Z stripped
+            expect(polygonFeature.properties['ext:elevation']).toBeUndefined();
+        });
+
         it('should throw an error if there is an error inserting lines records', async () => {
             // Arrange
             const tdei_dataset_id = 'dataset123';
@@ -489,6 +572,477 @@ describe('ExtractLoadService', () => {
 
             expect(querySpy).toHaveBeenCalled();
 
+        });
+    });
+
+    describe('Geometry Elevation Processing', () => {
+        let extractLoadService: ExtractLoadService;
+        let mockClient: any;
+        let executeQuerySpy: jest.SpyInstance;
+
+        beforeEach(() => {
+            extractLoadService = new ExtractLoadService();
+            mockClient = {} as any;
+            const queryMock = jest.fn().mockResolvedValue(undefined);
+            executeQuerySpy = jest.spyOn(dbClient, 'executeQuery').mockImplementation(queryMock);
+            extractLoadService.updateAdditionalFileData = jest.fn().mockResolvedValue(undefined);
+        });
+
+        afterEach(() => {
+            jest.clearAllMocks();
+        });
+
+        describe('Nodes - Z coordinate stripping and elevation extraction', () => {
+            it('should extract elevation and strip Z from 3D Point geometry', async () => {
+                const jsonData = {
+                    features: [
+                        {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'Point',
+                                coordinates: [-122.1355703, 47.6458165, 123.45] // 3D Point
+                            },
+                            properties: { _id: 'node1' }
+                        }
+                    ]
+                };
+
+                await extractLoadService.bulkInsertNodes(mockClient, 'dataset123', 'user123', jsonData);
+
+                const insertedFeature = executeQuerySpy.mock.calls[0][1].values[1];
+                expect(insertedFeature.geometry.coordinates).toEqual([-122.1355703, 47.6458165]); // Z stripped
+                expect(insertedFeature.properties['ext:elevation']).toBe(123.45);
+            });
+
+            it('should not add elevation property when Z is 0', async () => {
+                const jsonData = {
+                    features: [
+                        {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'Point',
+                                coordinates: [-122.1355703, 47.6458165, 0]
+                            },
+                            properties: { _id: 'node2' }
+                        }
+                    ]
+                };
+
+                await extractLoadService.bulkInsertNodes(mockClient, 'dataset123', 'user123', jsonData);
+
+                const insertedFeature = executeQuerySpy.mock.calls[0][1].values[1];
+                expect(insertedFeature.geometry.coordinates).toEqual([-122.1355703, 47.6458165]);
+                expect(insertedFeature.properties['ext:elevation']).toBeUndefined();
+            });
+
+            it('should handle existing ext:elevation property and use ext:elevation_1', async () => {
+                const jsonData = {
+                    features: [
+                        {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'Point',
+                                coordinates: [-122.1, 47.6, 150.0]
+                            },
+                            properties: {
+                                _id: 'node3',
+                                'ext:elevation': 100.0 // Existing property
+                            }
+                        }
+                    ]
+                };
+
+                await extractLoadService.bulkInsertNodes(mockClient, 'dataset123', 'user123', jsonData);
+
+                const insertedFeature = executeQuerySpy.mock.calls[0][1].values[1];
+                expect(insertedFeature.properties['ext:elevation']).toBe(100.0); // Original preserved
+                expect(insertedFeature.properties['ext:elevation_1']).toBe(150.0); // New elevation
+            });
+
+            it('should handle multiple existing ext:elevation properties', async () => {
+                const jsonData = {
+                    features: [
+                        {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'Point',
+                                coordinates: [-122.1, 47.6, 200.0]
+                            },
+                            properties: {
+                                _id: 'node4',
+                                'ext:elevation': 100.0,
+                                'ext:elevation_1': 150.0
+                            }
+                        }
+                    ]
+                };
+
+                await extractLoadService.bulkInsertNodes(mockClient, 'dataset123', 'user123', jsonData);
+
+                const insertedFeature = executeQuerySpy.mock.calls[0][1].values[1];
+                expect(insertedFeature.properties['ext:elevation']).toBe(100.0);
+                expect(insertedFeature.properties['ext:elevation_1']).toBe(150.0);
+                expect(insertedFeature.properties['ext:elevation_2']).toBe(200.0);
+            });
+
+            it('should handle 2D Point geometry without elevation', async () => {
+                const jsonData = {
+                    features: [
+                        {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'Point',
+                                coordinates: [-122.1355703, 47.6458165] // 2D Point
+                            },
+                            properties: { _id: 'node5' }
+                        }
+                    ]
+                };
+
+                await extractLoadService.bulkInsertNodes(mockClient, 'dataset123', 'user123', jsonData);
+
+                const insertedFeature = executeQuerySpy.mock.calls[0][1].values[1];
+                expect(insertedFeature.geometry.coordinates).toEqual([-122.1355703, 47.6458165]);
+                expect(insertedFeature.properties['ext:elevation']).toBeUndefined();
+            });
+        });
+
+        describe('Points - Z coordinate stripping and elevation extraction', () => {
+            it('should extract elevation and strip Z from 3D Point geometry', async () => {
+                const jsonData = {
+                    features: [
+                        {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'Point',
+                                coordinates: [-122.1, 47.6, 250.0]
+                            },
+                            properties: { _id: 'point1' }
+                        }
+                    ]
+                };
+
+                await extractLoadService.bulkInsertPoints(mockClient, 'dataset123', 'user123', jsonData);
+
+                const insertedFeature = executeQuerySpy.mock.calls[0][1].values[1];
+                expect(insertedFeature.geometry.coordinates).toEqual([-122.1, 47.6]); // Z stripped
+                expect(insertedFeature.properties['ext:elevation']).toBe(250.0);
+            });
+        });
+
+        describe('Edges - Z coordinate stripping only', () => {
+            it('should strip Z from 3D LineString geometry', async () => {
+                const jsonData = {
+                    features: [
+                        {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'LineString',
+                                coordinates: [
+                                    [-122.1, 47.6, 100.0],
+                                    [-122.2, 47.7, 200.0],
+                                    [-122.3, 47.8, 300.0]
+                                ]
+                            },
+                            properties: { _id: 'edge1' }
+                        }
+                    ]
+                };
+
+                await extractLoadService.bulkInsertEdges(mockClient, 'dataset123', 'user123', jsonData);
+
+                const insertedFeature = executeQuerySpy.mock.calls[0][1].values[1];
+                expect(insertedFeature.geometry.coordinates).toEqual([
+                    [-122.1, 47.6],
+                    [-122.2, 47.7],
+                    [-122.3, 47.8]
+                ]); // Z stripped from all coordinates
+                expect(insertedFeature.properties['ext:elevation']).toBeUndefined();
+            });
+
+            it('should handle 2D LineString geometry', async () => {
+                const jsonData = {
+                    features: [
+                        {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'LineString',
+                                coordinates: [
+                                    [-122.1, 47.6],
+                                    [-122.2, 47.7]
+                                ]
+                            },
+                            properties: { _id: 'edge2' }
+                        }
+                    ]
+                };
+
+                await extractLoadService.bulkInsertEdges(mockClient, 'dataset123', 'user123', jsonData);
+
+                const insertedFeature = executeQuerySpy.mock.calls[0][1].values[1];
+                expect(insertedFeature.geometry.coordinates).toEqual([
+                    [-122.1, 47.6],
+                    [-122.2, 47.7]
+                ]);
+                expect(insertedFeature.properties['ext:elevation']).toBeUndefined();
+            });
+        });
+
+        describe('Lines - Z coordinate stripping only', () => {
+            it('should strip Z from 3D LineString geometry', async () => {
+                const jsonData = {
+                    features: [
+                        {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'LineString',
+                                coordinates: [
+                                    [-122.1, 47.6, 150.0],
+                                    [-122.2, 47.7, 160.0]
+                                ]
+                            },
+                            properties: { _id: 'line1' }
+                        }
+                    ]
+                };
+
+                await extractLoadService.bulkInsertLines(mockClient, 'dataset123', 'user123', jsonData);
+
+                const insertedFeature = executeQuerySpy.mock.calls[0][1].values[1];
+                expect(insertedFeature.geometry.coordinates).toEqual([
+                    [-122.1, 47.6],
+                    [-122.2, 47.7]
+                ]); // Z stripped
+                expect(insertedFeature.properties['ext:elevation']).toBeUndefined();
+            });
+
+            it('should strip Z from 3D MultiLineString geometry', async () => {
+                const jsonData = {
+                    features: [
+                        {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'MultiLineString',
+                                coordinates: [
+                                    [
+                                        [-122.1, 47.6, 100.0],
+                                        [-122.2, 47.7, 110.0]
+                                    ],
+                                    [
+                                        [-122.3, 47.8, 120.0],
+                                        [-122.4, 47.9, 130.0]
+                                    ]
+                                ]
+                            },
+                            properties: { _id: 'line2' }
+                        }
+                    ]
+                };
+
+                await extractLoadService.bulkInsertLines(mockClient, 'dataset123', 'user123', jsonData);
+
+                const insertedFeature = executeQuerySpy.mock.calls[0][1].values[1];
+                expect(insertedFeature.geometry.coordinates).toEqual([
+                    [
+                        [-122.1, 47.6],
+                        [-122.2, 47.7]
+                    ],
+                    [
+                        [-122.3, 47.8],
+                        [-122.4, 47.9]
+                    ]
+                ]); // Z stripped from all coordinates
+                expect(insertedFeature.properties['ext:elevation']).toBeUndefined();
+            });
+        });
+
+        describe('Polygons - Z coordinate stripping only', () => {
+            it('should strip Z from 3D Polygon geometry', async () => {
+                const jsonData = {
+                    features: [
+                        {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'Polygon',
+                                coordinates: [
+                                    [
+                                        [-122.1, 47.6, 100.0],
+                                        [-122.2, 47.7, 110.0],
+                                        [-122.3, 47.8, 120.0],
+                                        [-122.1, 47.6, 100.0]
+                                    ]
+                                ]
+                            },
+                            properties: { _id: 'polygon1' }
+                        }
+                    ]
+                };
+
+                await extractLoadService.bulkInsertPolygons(mockClient, 'dataset123', 'user123', jsonData);
+
+                const insertedFeature = executeQuerySpy.mock.calls[0][1].values[1];
+                expect(insertedFeature.geometry.coordinates).toEqual([
+                    [
+                        [-122.1, 47.6],
+                        [-122.2, 47.7],
+                        [-122.3, 47.8],
+                        [-122.1, 47.6]
+                    ]
+                ]); // Z stripped from all coordinates
+                expect(insertedFeature.properties['ext:elevation']).toBeUndefined();
+            });
+
+            it('should strip Z from 3D MultiPolygon geometry', async () => {
+                const jsonData = {
+                    features: [
+                        {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'MultiPolygon',
+                                coordinates: [
+                                    [
+                                        [
+                                            [-122.1, 47.6, 100.0],
+                                            [-122.2, 47.7, 110.0],
+                                            [-122.1, 47.6, 100.0]
+                                        ]
+                                    ],
+                                    [
+                                        [
+                                            [-122.3, 47.8, 120.0],
+                                            [-122.4, 47.9, 130.0],
+                                            [-122.3, 47.8, 120.0]
+                                        ]
+                                    ]
+                                ]
+                            },
+                            properties: { _id: 'polygon2' }
+                        }
+                    ]
+                };
+
+                await extractLoadService.bulkInsertPolygons(mockClient, 'dataset123', 'user123', jsonData);
+
+                const insertedFeature = executeQuerySpy.mock.calls[0][1].values[1];
+                expect(insertedFeature.geometry.coordinates).toEqual([
+                    [
+                        [
+                            [-122.1, 47.6],
+                            [-122.2, 47.7],
+                            [-122.1, 47.6]
+                        ]
+                    ],
+                    [
+                        [
+                            [-122.3, 47.8],
+                            [-122.4, 47.9],
+                            [-122.3, 47.8]
+                        ]
+                    ]
+                ]); // Z stripped from all coordinates
+                expect(insertedFeature.properties['ext:elevation']).toBeUndefined();
+            });
+        });
+
+        describe('Zones - Z coordinate stripping only', () => {
+            it('should strip Z from 3D Polygon geometry', async () => {
+                const jsonData = {
+                    features: [
+                        {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'Polygon',
+                                coordinates: [
+                                    [
+                                        [-122.1, 47.6, 200.0],
+                                        [-122.2, 47.7, 210.0],
+                                        [-122.1, 47.6, 200.0]
+                                    ]
+                                ]
+                            },
+                            properties: { _id: 'zone1' }
+                        }
+                    ]
+                };
+
+                await extractLoadService.bulkInsertZones(mockClient, 'dataset123', 'user123', jsonData);
+
+                const insertedFeature = executeQuerySpy.mock.calls[0][1].values[1];
+                expect(insertedFeature.geometry.coordinates).toEqual([
+                    [
+                        [-122.1, 47.6],
+                        [-122.2, 47.7],
+                        [-122.1, 47.6]
+                    ]
+                ]); // Z stripped from all coordinates
+                expect(insertedFeature.properties['ext:elevation']).toBeUndefined();
+            });
+        });
+
+        describe('Complex scenarios', () => {
+            it('should handle mixed 2D and 3D coordinates in LineString', async () => {
+                const jsonData = {
+                    features: [
+                        {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'LineString',
+                                coordinates: [
+                                    [-122.1, 47.6], // 2D
+                                    [-122.2, 47.7, 100.0], // 3D
+                                    [-122.3, 47.8] // 2D
+                                ]
+                            },
+                            properties: { _id: 'edge3' }
+                        }
+                    ]
+                };
+
+                await extractLoadService.bulkInsertEdges(mockClient, 'dataset123', 'user123', jsonData);
+
+                const insertedFeature = executeQuerySpy.mock.calls[0][1].values[1];
+                expect(insertedFeature.geometry.coordinates).toEqual([
+                    [-122.1, 47.6],
+                    [-122.2, 47.7],
+                    [-122.3, 47.8]
+                ]); // All Z stripped
+            });
+
+            it('should handle feature without geometry', async () => {
+                const jsonData = {
+                    features: [
+                        {
+                            type: 'Feature',
+                            properties: { _id: 'feature1' }
+                        }
+                    ]
+                };
+
+                await extractLoadService.bulkInsertNodes(mockClient, 'dataset123', 'user123', jsonData);
+
+                const insertedFeature = executeQuerySpy.mock.calls[0][1].values[1];
+                expect(insertedFeature.geometry).toBeUndefined();
+            });
+
+            it('should handle feature with null coordinates', async () => {
+                const jsonData = {
+                    features: [
+                        {
+                            type: 'Feature',
+                            geometry: {
+                                type: 'Point',
+                                coordinates: null
+                            },
+                            properties: { _id: 'feature2' }
+                        }
+                    ]
+                };
+
+                await extractLoadService.bulkInsertNodes(mockClient, 'dataset123', 'user123', jsonData);
+
+                const insertedFeature = executeQuerySpy.mock.calls[0][1].values[1];
+                expect(insertedFeature.geometry.coordinates).toBeNull();
+            });
         });
     });
 });
