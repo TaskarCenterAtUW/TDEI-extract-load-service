@@ -118,6 +118,14 @@ export class ExtractLoadService {
                             promises.push(this.bulkInsertExtension(client, tdei_dataset_id, user_id, jsonData, entry));
                         }
 
+                    } else {
+                        // IMPORTANT: Always drain entries we don't consume, otherwise unzipper's
+                        // internal stream can stall and `for await` will appear to "hang".
+                        if (typeof (entry as any).autodrain === 'function') {
+                            (entry as any).autodrain();
+                        } else if (typeof (entry as any).resume === 'function') {
+                            (entry as any).resume();
+                        }
                     }
                 }
                 await Promise.all(promises);
