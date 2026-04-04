@@ -1,7 +1,8 @@
 import { ExtractLoadService } from "../../src/service/extract-load-service";
 import { mockCore } from "../common/mock-utils";
 import dbClient from "../../src/database/data-source";
-import { Readable } from 'stream';
+import { environment } from "../../src/environment/environment";
+import { PassThrough, Readable } from 'stream';
 import unzipper from 'unzipper';
 
 jest.mock('unzipper', () => ({
@@ -102,6 +103,7 @@ describe('ExtractLoadService', () => {
             extractLoadService.bulkInsertLines = jest.fn();
             extractLoadService.bulkInsertPolygons = jest.fn();
             extractLoadService.bulkInsertZones = jest.fn();
+            jest.spyOn(extractLoadService, 'updateAdditionalFileData').mockResolvedValue(undefined);
 
 
             // Mock getFileStream to return a readable stream
@@ -145,11 +147,12 @@ describe('ExtractLoadService', () => {
             expect(publishMessageMock).toHaveBeenCalledWith(message, true, "Data loaded successfully");
 
             function getMockEntry(name: string) {
-                const mockEntry: any = new Readable({ objectMode: true });
-                mockEntry._read = () => { }; // No-op
+                const mockEntry: any = new PassThrough();
                 mockEntry.type = 'File';
                 mockEntry.path = name;
-                mockEntry.buffer = jest.fn().mockResolvedValue(Buffer.from(JSON.stringify({ features: [] })));
+                const payload = JSON.stringify({ type: 'FeatureCollection', features: [] });
+                mockEntry.buffer = jest.fn().mockResolvedValue(Buffer.from(payload));
+                setImmediate(() => mockEntry.end(payload));
                 return mockEntry;
             }
         }, 15000);
@@ -179,6 +182,60 @@ describe('ExtractLoadService', () => {
                 values: ["dataset123"]
             });
             expect(publishMessageMock).toHaveBeenCalledWith(message, false, expect.any(String));
+        });
+
+        it('should await each geojson entry before starting the next one', async () => {
+            const message: any = {
+                data: {
+                    tdei_dataset_id: "dataset123",
+                    user_id: "user123"
+                }
+            };
+
+            jest.spyOn(dbClient, 'query').mockResolvedValue(undefined as any);
+            jest.spyOn(dbClient, 'runInTransaction').mockImplementation(async (callback) => {
+                await callback({} as any);
+            });
+
+            extractLoadService.publishMessage = jest.fn();
+
+            const mockUnzipStream = new Readable({ objectMode: true });
+            mockUnzipStream._read = () => { };
+
+            const firstEntry = { type: 'File', path: 'edges.geojson' } as any;
+            const secondEntry = { type: 'File', path: 'nodes.geojson' } as any;
+
+            mockUnzipStream.push(firstEntry);
+            mockUnzipStream.push(secondEntry);
+            mockUnzipStream.push(null);
+
+            jest.spyOn(extractLoadService, 'getFileStream').mockResolvedValue({
+                pipe: jest.fn().mockReturnValue(mockUnzipStream)
+            } as any);
+            (unzipper.Parse as jest.Mock).mockReturnValue({} as any);
+
+            let releaseFirstEntry!: () => void;
+            const firstEntryDone = new Promise<void>((resolve) => {
+                releaseFirstEntry = resolve;
+            });
+
+            const processGeoJsonZipEntrySpy = jest
+                .spyOn(extractLoadService as any, 'processGeoJsonZipEntry')
+                .mockImplementationOnce(() => firstEntryDone)
+                .mockResolvedValueOnce(undefined);
+
+            const processingPromise = extractLoadService.processOSWDataset(message, "file_upload_path");
+
+            await new Promise((resolve) => setImmediate(resolve));
+            expect(processGeoJsonZipEntrySpy).toHaveBeenCalledTimes(1);
+            expect(processGeoJsonZipEntrySpy).toHaveBeenNthCalledWith(1, expect.anything(), firstEntry, "dataset123", "user123");
+
+            releaseFirstEntry();
+
+            await processingPromise;
+
+            expect(processGeoJsonZipEntrySpy).toHaveBeenCalledTimes(2);
+            expect(processGeoJsonZipEntrySpy).toHaveBeenNthCalledWith(2, expect.anything(), secondEntry, "dataset123", "user123");
         });
     });
     describe('bulk Insert Edges', () => {
@@ -229,6 +286,123 @@ describe('ExtractLoadService', () => {
 
             expect(querySpy).toHaveBeenCalled();
 
+        });
+    });
+
+    describe('processGeoJsonZipEntry', () => {
+        it('should collect root header fields even when they appear after features', async () => {
+            const client = {} as any;
+            const entry: any = new PassThrough();
+            entry.type = 'File';
+            entry.path = 'edges.geojson';
+
+            const updateAdditionalFileData = jest.spyOn(extractLoadService, 'updateAdditionalFileData').mockResolvedValue(undefined);
+            const bulkInsertEdges = jest.spyOn(extractLoadService, 'bulkInsertEdges').mockResolvedValue(undefined);
+
+            const payload = '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"id":1}}],"name":"late header","bbox":[1,2]}';
+            setImmediate(() => entry.end(payload));
+
+            await (extractLoadService as any).processGeoJsonZipEntry(client, entry, 'dataset123', 'user123');
+
+            expect(updateAdditionalFileData).toHaveBeenCalledWith(
+                { name: 'late header', bbox: [1, 2] },
+                'event_info',
+                'dataset123',
+                client
+            );
+            expect(bulkInsertEdges).toHaveBeenCalledWith(
+                client,
+                'dataset123',
+                'user123',
+                expect.objectContaining({
+                    features: [{ type: 'Feature', properties: { id: 1 } }]
+                })
+            );
+            expect(bulkInsertEdges.mock.invocationCallOrder[0]).toBeLessThan(updateAdditionalFileData.mock.invocationCallOrder[0]);
+        });
+
+        it('should batch features through the stream and write full header metadata at the end', async () => {
+            const originalBatchSize = environment.bulkInsertSize;
+            environment.bulkInsertSize = 2;
+
+            try {
+                const client = {} as any;
+                const entry: any = new PassThrough();
+                entry.type = 'File';
+                entry.path = 'edges.geojson';
+
+                const updateAdditionalFileData = jest.spyOn(extractLoadService, 'updateAdditionalFileData').mockResolvedValue(undefined);
+                const bulkInsertEdges = jest.spyOn(extractLoadService, 'bulkInsertEdges').mockResolvedValue(undefined);
+
+                const payload = JSON.stringify({
+                    type: 'FeatureCollection',
+                    name: 'edge-file',
+                    metadata: { source: 'test-suite' },
+                    features: [
+                        { type: 'Feature', properties: { id: 1 } },
+                        { type: 'Feature', properties: { id: 2 } },
+                        { type: 'Feature', properties: { id: 3 } },
+                        { type: 'Feature', properties: { id: 4 } },
+                        { type: 'Feature', properties: { id: 5 } },
+                    ],
+                    bbox: [10, 20, 30, 40],
+                });
+
+                setImmediate(() => entry.end(payload));
+
+                await (extractLoadService as any).processGeoJsonZipEntry(client, entry, 'dataset123', 'user123');
+
+                expect(bulkInsertEdges).toHaveBeenCalledTimes(3);
+                expect(bulkInsertEdges).toHaveBeenNthCalledWith(
+                    1,
+                    client,
+                    'dataset123',
+                    'user123',
+                    expect.objectContaining({
+                        features: [
+                            { type: 'Feature', properties: { id: 1 } },
+                            { type: 'Feature', properties: { id: 2 } }
+                        ]
+                    })
+                );
+                expect(bulkInsertEdges).toHaveBeenNthCalledWith(
+                    2,
+                    client,
+                    'dataset123',
+                    'user123',
+                    expect.objectContaining({
+                        features: [
+                            { type: 'Feature', properties: { id: 3 } },
+                            { type: 'Feature', properties: { id: 4 } }
+                        ]
+                    })
+                );
+                expect(bulkInsertEdges).toHaveBeenNthCalledWith(
+                    3,
+                    client,
+                    'dataset123',
+                    'user123',
+                    expect.objectContaining({
+                        features: [
+                            { type: 'Feature', properties: { id: 5 } }
+                        ]
+                    })
+                );
+
+                expect(updateAdditionalFileData).toHaveBeenCalledWith(
+                    {
+                        name: 'edge-file',
+                        metadata: { source: 'test-suite' },
+                        bbox: [10, 20, 30, 40]
+                    },
+                    'event_info',
+                    'dataset123',
+                    client
+                );
+                expect(bulkInsertEdges.mock.invocationCallOrder[2]).toBeLessThan(updateAdditionalFileData.mock.invocationCallOrder[0]);
+            } finally {
+                environment.bulkInsertSize = originalBatchSize;
+            }
         });
     });
 

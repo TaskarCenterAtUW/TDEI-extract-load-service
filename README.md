@@ -84,3 +84,17 @@ Follow the steps to install the node packages required for testing the applicati
 ```
 
 An example env file can be found at `.env-example`
+
+
+## File processing design
+
+File processing is handled as “producer → consumer” chain, that is:
+
+storage read stream → unzipper.Parse() → entry stream → parser() → fork(header stream, feature stream)
+
+feature stream: pick/streamArray/batch → featuresSink (Writable) → DB inserts
+
+If DB inserts are slow, featuresSink can’t accept more data, so the whole feature path slows down automatically.
+
+Keeps memory bounded even for huge files
+Prevents your service from overwhelming Postgres / network
