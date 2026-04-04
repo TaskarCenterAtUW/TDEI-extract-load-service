@@ -35,6 +35,9 @@
     "nodets-ms-core": "^0.0.17",
     "pg": "^8.11.3",
     "rimraf": "^5.0.5",
+    "stream-chain": "^3.6.1",
+    "stream-fork": "^1.0.5",
+    "stream-json": "^2.1.0",
     "unzipper": "^0.12.3"
   }
 }

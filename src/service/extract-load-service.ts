@@ -5,6 +5,20 @@ import { environment } from "../environment/environment";
 import { PoolClient } from "pg";
 import unzipper from 'unzipper';
 import path from 'path';
+import { Readable, Writable } from 'stream';
+import { finished, pipeline } from 'stream/promises';
+import { chain } from 'stream-chain';
+import { parser } from 'stream-json';
+
+import { pick } from 'stream-json/filters/pick.js';
+import { streamArray } from 'stream-json/streamers/stream-array.js';
+import { streamObject } from 'stream-json/streamers/stream-object.js';
+import batch from 'stream-json/utils/batch.js';
+import Fork from 'stream-fork';
+
+
+type UnzipGeoJsonEntry = Readable & { path: string; type: string };
+
 export class ExtractLoadRequest {
     data_type!: string;
     tdei_dataset_id!: string;
@@ -23,6 +37,143 @@ export interface IExtractLoadRequest {
  */
 export class ExtractLoadService {
     constructor() { }
+
+    private geoJsonPipeError(err: unknown): Error {
+        if (err instanceof Error) {
+            if (err.name === 'SyntaxError' || /invalid json/i.test(err.message)) {
+                return new Error('The GeoJSON file is not valid JSON: ' + err.message);
+            }
+            return err;
+        }
+        return new Error(String(err));
+    }
+
+    private async processGeoJsonZipEntry(
+        client: PoolClient,
+        entry: UnzipGeoJsonEntry,
+        tdei_dataset_id: string,
+        user_id: string
+    ): Promise<void> {
+        // Stream once: insert features batch-by-batch while collecting root header pairs for the final metadata update.
+        const header: Record<string, any> = {};
+        let extFileId: number | undefined;
+
+        const entryPath = entry.path ?? '';
+        const routeKind =
+            entryPath.includes('nodes') ? 'nodes' :
+                entryPath.includes('edges') ? 'edges' :
+                    entryPath.includes('points') ? 'points' :
+                        entryPath.includes('lines') ? 'lines' :
+                            entryPath.includes('polygons') ? 'polygons' :
+                                entryPath.includes('zones') ? 'zones' :
+                                    'extension';
+
+        const route: {
+            meta: () => Promise<void>;
+            insert: (features: any[]) => Promise<void>;
+        } = (() => {
+            switch (routeKind) {
+                case 'nodes':
+                    return {
+                        meta: () => this.updateAdditionalFileData(header, 'node_info', tdei_dataset_id, client),
+                        insert: (features) => this.bulkInsertNodes(client, tdei_dataset_id, user_id, { ...header, features }),
+                    };
+                case 'edges':
+                    return {
+                        meta: () => this.updateAdditionalFileData(header, 'event_info', tdei_dataset_id, client),
+                        insert: (features) => this.bulkInsertEdges(client, tdei_dataset_id, user_id, { ...header, features }),
+                    };
+                case 'points':
+                    return {
+                        meta: () => this.updateAdditionalFileData(header, 'ext_point_info', tdei_dataset_id, client),
+                        insert: (features) => this.bulkInsertPoints(client, tdei_dataset_id, user_id, { ...header, features }),
+                    };
+                case 'lines':
+                    return {
+                        meta: () => this.updateAdditionalFileData(header, 'ext_line_info', tdei_dataset_id, client),
+                        insert: (features) => this.bulkInsertLines(client, tdei_dataset_id, user_id, { ...header, features }),
+                    };
+                case 'polygons':
+                    return {
+                        meta: () => this.updateAdditionalFileData(header, 'ext_polygon_info', tdei_dataset_id, client),
+                        insert: (features) => this.bulkInsertPolygons(client, tdei_dataset_id, user_id, { ...header, features }),
+                    };
+                case 'zones':
+                    return {
+                        meta: () => this.updateAdditionalFileData(header, 'zone_info', tdei_dataset_id, client),
+                        insert: (features) => this.bulkInsertZones(client, tdei_dataset_id, user_id, { ...header, features }),
+                    };
+                case 'extension':
+                default:
+                    return {
+                        meta: async () => {
+                            extFileId = await this.updateExtensionFileData(header, tdei_dataset_id, user_id, entry.path, client);
+                        },
+                        insert: (features) => this.bulkInsertExtension(client, tdei_dataset_id, user_id, { ...header, features }, entry, extFileId),
+                    };
+            }
+        })();
+
+        let sawAnyBatch = false;
+
+        const headerChain = chain([
+            streamObject({
+                objectFilter: (asm: { depth: number; path?: (string | number)[] }) =>
+                    !(asm.depth === 2 && asm.path?.[0] === 'features'),
+            }),
+        ]);
+        const headerSink = new Writable({
+            objectMode: true,
+            write: (chunk: { key: string; value: any }, _enc, cb) => {
+                const k = chunk?.key;
+                if (
+                    k &&
+                    k !== 'features' &&
+                    !(k === 'type' && chunk.value === 'FeatureCollection')
+                ) {
+                    header[k] = chunk.value;
+                }
+                cb();
+            },
+        });
+        headerChain.pipe(headerSink);
+
+        const featuresChain = chain([
+            pick({ filter: 'features' }),
+            streamArray(),
+            (chunk: { value: any }) => chunk.value,
+            batch({ batchSize: environment.bulkInsertSize }),
+        ]);
+        const featuresSink = new Writable({
+            objectMode: true,
+            write: async (features: any[], _enc, cb) => {
+                sawAnyBatch = true;
+                try {
+                    await route.insert(features);
+                    cb();
+                } catch (e) {
+                    const err = e instanceof Error ? e : new Error(String(e));
+                    featuresSink.destroy(err);
+                    cb(err);
+                }
+            }
+        });
+        featuresChain.pipe(featuresSink);
+
+        const fork = new Fork([headerChain, featuresChain], { objectMode: true });
+
+        try {
+            await pipeline(entry, chain([parser()]), fork);
+            await Promise.all([finished(headerSink), finished(featuresSink)]);
+        } catch (e) {
+            throw this.geoJsonPipeError(e);
+        }
+
+        if (!sawAnyBatch) await route.insert([]);
+        if (routeKind !== 'extension') {
+            await route.meta();
+        }
+    }
 
     /**
  * Processes the extract and load request.
@@ -88,37 +239,16 @@ export class ExtractLoadService {
             await dbClient.runInTransaction(async (client) => {
                 const directory = (await this.getFileStream(fileUploadPath)).pipe(unzipper.Parse({ forceStream: true }));
 
-                const promises = [];
+                let hasGeoJson = false;
                 console.time(`processFiles ${tdei_dataset_id}`);
                 for await (const entry of directory) {
                     if (entry.type === 'File' && entry.path.endsWith('.geojson') && !entry.path.includes('__MACOSX/')) {
-                        const content = await entry.buffer();
-                        let jsonData;
-                        try {
-                            jsonData = JSON.parse(content.toString('utf8'));
-                        } catch (error) {
-                            console.error("Unable to parse content as JSON:", entry.path, error);
-                            throw new Error("Unable to parse content as JSON:" + entry.path + error);
-                        }
-
-                        if (entry.path.includes('nodes')) {
-                            promises.push(this.bulkInsertNodes(client, tdei_dataset_id, user_id, jsonData));
-                        } else if (entry.path.includes('edges')) {
-                            promises.push(this.bulkInsertEdges(client, tdei_dataset_id, user_id, jsonData));
-                        } else if (entry.path.includes('points')) {
-                            promises.push(this.bulkInsertPoints(client, tdei_dataset_id, user_id, jsonData));
-                        } else if (entry.path.includes('lines')) {
-                            promises.push(this.bulkInsertLines(client, tdei_dataset_id, user_id, jsonData));
-                        } else if (entry.path.includes('polygons')) {
-                            promises.push(this.bulkInsertPolygons(client, tdei_dataset_id, user_id, jsonData));
-                        } else if (entry.path.includes('zones')) {
-                            promises.push(this.bulkInsertZones(client, tdei_dataset_id, user_id, jsonData));
-                        } else {
-                            //Process geojson as an extension file if it does not match any of the above
-                            promises.push(this.bulkInsertExtension(client, tdei_dataset_id, user_id, jsonData, entry));
-                        }
-
-                    } else {
+                        hasGeoJson = true;
+                        // Must await each entry: unzipper only advances after this entry's stream is fully consumed.
+                        // Starting the next file while a previous entry is still piping can deadlock the parser.
+                        await this.processGeoJsonZipEntry(client, entry as UnzipGeoJsonEntry, tdei_dataset_id, user_id);
+                    }
+                    else {
                         // IMPORTANT: Always drain entries we don't consume, otherwise unzipper's
                         // internal stream can stall and `for await` will appear to "hang".
                         if (typeof (entry as any).autodrain === 'function') {
@@ -128,7 +258,9 @@ export class ExtractLoadService {
                         }
                     }
                 }
-                await Promise.all(promises);
+                if (!hasGeoJson) {
+                    throw new Error('No valid .geojson files found in dataset archive.');
+                }
                 console.timeEnd(`processFiles ${tdei_dataset_id}`);
             });
 
@@ -150,7 +282,7 @@ export class ExtractLoadService {
         } catch (error) {
             console.error('Error loading the data:', error);
             // If any of the promises fail, rollback the transaction
-            await this.publishMessage(message, false, "Error loading the data" + error);
+            await this.publishMessage(message, false, "Error loading the data : " + (error as Error).message);
         }
     }
 
@@ -167,10 +299,8 @@ export class ExtractLoadService {
     public async bulkInsertZones(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
-            const col_name = "zone_info";
-            //store additional information
-            await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
-
+            const timerLabel = `bulkInsertZones ${tdei_dataset_id} ${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            console.time(timerLabel);
             // Batch processing
             while (jsonData.features.length > 0) {
                 const batch = jsonData.features.splice(0, batchSize);
@@ -183,7 +313,7 @@ export class ExtractLoadService {
 
                 // Parameterized query
                 const values = processedBatch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
-                const placeholders = processedBatch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
+                const placeholders = processedBatch.map((_: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
 
                 const queryObject = {
                     text: `
@@ -195,6 +325,7 @@ export class ExtractLoadService {
 
                 await dbClient.executeQuery(client, queryObject);
             }
+            console.timeEnd(timerLabel);
             Promise.resolve(true);
         } catch (error) {
             console.error('Error inserting zone records:', error);
@@ -215,10 +346,8 @@ export class ExtractLoadService {
     public async bulkInsertEdges(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
-            const col_name = "event_info";
-            //store additional information
-            await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
-            console.time(`bulkInsertEdges ${tdei_dataset_id}`);
+            const timerLabel = `bulkInsertEdges ${tdei_dataset_id} ${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            console.time(timerLabel);
             console.log('Inserting edge records');
             // Batch processing
             while (jsonData.features.length > 0) {
@@ -232,7 +361,7 @@ export class ExtractLoadService {
 
                 // Parameterized query
                 const values = processedBatch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
-                const placeholders = processedBatch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
+                const placeholders = processedBatch.map((_: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
 
                 const queryObject = {
                     text: `
@@ -244,7 +373,7 @@ export class ExtractLoadService {
 
                 await dbClient.executeQuery(client, queryObject);
             }
-            console.timeEnd(`bulkInsertEdges ${tdei_dataset_id}`);
+            console.timeEnd(timerLabel);
             Promise.resolve(true);
         } catch (error) {
             console.error('Error inserting edge records:', error);
@@ -262,12 +391,15 @@ export class ExtractLoadService {
 * @returns A Promise that resolves to void.
 * @throws An error if there is an issue inserting the edge records.
 */
-    public async bulkInsertExtension(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any, entry: any): Promise<void> {
+    public async bulkInsertExtension(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any, entry: any, existingExtFileId?: number): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
             //store additional information
-            const ext_file_id = await this.updateExtensionFileData(jsonData, tdei_dataset_id, user_id, entry.path, client);
-            console.time(`bulkInsertExtension ${tdei_dataset_id}`);
+            const ext_file_id = existingExtFileId !== undefined
+                ? existingExtFileId
+                : await this.updateExtensionFileData(jsonData, tdei_dataset_id, user_id, entry.path, client);
+            const timerLabel = `bulkInsertExtension ${tdei_dataset_id} ${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            console.time(timerLabel);
             console.log('Inserting extension records');
             // Batch processing
             while (jsonData.features.length > 0) {
@@ -281,7 +413,7 @@ export class ExtractLoadService {
 
                 // Parameterized query
                 const values = processedBatch.flatMap((record: any) => [tdei_dataset_id, ext_file_id, record, user_id]);
-                const placeholders = processedBatch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++}, $${counter++})`).join(', ');
+                const placeholders = processedBatch.map((_: any) => `($${counter++}, $${counter++}, $${counter++}, $${counter++})`).join(', ');
 
                 const queryObject = {
                     text: `
@@ -293,7 +425,7 @@ export class ExtractLoadService {
 
                 await dbClient.executeQuery(client, queryObject);
             }
-            console.timeEnd(`bulkInsertExtension ${tdei_dataset_id}`);
+            console.timeEnd(timerLabel);
             Promise.resolve(true);
         } catch (error) {
             console.error('Error inserting extension records:', error);
@@ -476,11 +608,9 @@ export class ExtractLoadService {
     public async bulkInsertNodes(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
-            const col_name = "node_info";
-            //store additional information
-            await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
             // Batch processing
-            console.time(`bulkInsertNodes ${tdei_dataset_id}`);
+            const timerLabel = `bulkInsertNodes ${tdei_dataset_id} ${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            console.time(timerLabel);
             console.log('Inserting node records');
 
             while (jsonData.features.length > 0) {
@@ -494,7 +624,7 @@ export class ExtractLoadService {
 
                 // Parameterized query
                 const values = processedBatch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
-                const placeholders = processedBatch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
+                const placeholders = processedBatch.map((_: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
 
                 const queryObject = {
                     text: `
@@ -506,7 +636,7 @@ export class ExtractLoadService {
 
                 await dbClient.executeQuery(client, queryObject);
             }
-            console.timeEnd(`bulkInsertNodes ${tdei_dataset_id}`);
+            console.timeEnd(timerLabel);
             Promise.resolve(true);
         } catch (error) {
             console.error('Error inserting node records:', error);
@@ -527,9 +657,8 @@ export class ExtractLoadService {
     public async bulkInsertPoints(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
-            const col_name = "ext_point_info";
-            //store additional information
-            await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
+            const timerLabel = `bulkInsertPoints ${tdei_dataset_id} ${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            console.time(timerLabel);
             // Batch processing
             while (jsonData.features.length > 0) {
                 const batch = jsonData.features.splice(0, batchSize);
@@ -542,7 +671,7 @@ export class ExtractLoadService {
 
                 // Parameterized query
                 const values = processedBatch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
-                const placeholders = processedBatch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
+                const placeholders = processedBatch.map((_: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
 
                 const queryObject = {
                     text: `
@@ -554,6 +683,7 @@ export class ExtractLoadService {
 
                 await dbClient.executeQuery(client, queryObject);
             }
+            console.timeEnd(timerLabel);
             Promise.resolve(true);
         } catch (error) {
             console.error('Error inserting extension_point records:', error);
@@ -574,9 +704,8 @@ export class ExtractLoadService {
     public async bulkInsertPolygons(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
-            const col_name = "ext_polygon_info";
-            //store additional information
-            await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
+            const timerLabel = `bulkInsertPolygons ${tdei_dataset_id} ${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            console.time(timerLabel);
             // Batch processing
             while (jsonData.features.length > 0) {
                 const batch = jsonData.features.splice(0, batchSize);
@@ -589,7 +718,7 @@ export class ExtractLoadService {
 
                 // Parameterized query
                 const values = processedBatch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
-                const placeholders = processedBatch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
+                const placeholders = processedBatch.map((_: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
 
                 const queryObject = {
                     text: `
@@ -601,6 +730,7 @@ export class ExtractLoadService {
 
                 await dbClient.executeQuery(client, queryObject);
             }
+            console.timeEnd(timerLabel);
             Promise.resolve(true);
         } catch (error) {
             console.error('Error inserting extension_polygon records:', error);
@@ -621,9 +751,8 @@ export class ExtractLoadService {
     public async bulkInsertLines(client: PoolClient, tdei_dataset_id: string, user_id: string, jsonData: any): Promise<void> {
         const batchSize = environment.bulkInsertSize;
         try {
-            const col_name = "ext_line_info";
-            //store additional information
-            await this.updateAdditionalFileData(jsonData, col_name, tdei_dataset_id, client);
+            const timerLabel = `bulkInsertLines ${tdei_dataset_id} ${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            console.time(timerLabel);
             // Batch processing
             while (jsonData.features.length > 0) {
                 const batch = jsonData.features.splice(0, batchSize);
@@ -636,7 +765,7 @@ export class ExtractLoadService {
 
                 // Parameterized query
                 const values = processedBatch.flatMap((record: any) => [tdei_dataset_id, record, user_id]);
-                const placeholders = processedBatch.map((_: any, index: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
+                const placeholders = processedBatch.map((_: any) => `($${counter++}, $${counter++}, $${counter++})`).join(', ');
 
                 const queryObject = {
                     text: `
@@ -648,6 +777,7 @@ export class ExtractLoadService {
 
                 await dbClient.executeQuery(client, queryObject);
             }
+            console.timeEnd(timerLabel);
             Promise.resolve(true);
         } catch (error) {
             console.error('Error inserting extension_line records:', error);
