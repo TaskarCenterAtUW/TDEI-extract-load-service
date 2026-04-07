@@ -5,7 +5,7 @@ import { environment } from "../environment/environment";
 import { PoolClient } from "pg";
 import unzipper from 'unzipper';
 import path from 'path';
-import { Readable, Writable } from 'stream';
+import { Readable, Transform, Writable } from 'stream';
 import { finished, pipeline } from 'stream/promises';
 import { chain } from 'stream-chain';
 import { parser } from 'stream-json';
@@ -115,60 +115,104 @@ export class ExtractLoadService {
         })();
 
         let sawAnyBatch = false;
+        let batchCount = 0;
 
-        const headerChain = chain([
-            streamObject({
-                objectFilter: (asm: { depth: number; path?: (string | number)[] }) =>
-                    !(asm.depth === 2 && asm.path?.[0] === 'features'),
-            }),
-        ]);
-        const headerSink = new Writable({
-            objectMode: true,
-            write: (chunk: { key: string; value: any }, _enc, cb) => {
-                const k = chunk?.key;
-                if (
-                    k &&
-                    k !== 'features' &&
-                    !(k === 'type' && chunk.value === 'FeatureCollection')
-                ) {
-                    header[k] = chunk.value;
-                }
-                cb();
-            },
-        });
-        headerChain.pipe(headerSink);
+        console.log(`[GeoJSON] pipeline start: ${entryPath}`);
 
-        const featuresChain = chain([
-            pick({ filter: 'features' }),
-            streamArray(),
-            (chunk: { value: any }) => chunk.value,
-            batch({ batchSize: environment.bulkInsertSize }),
-        ]);
-        const featuresSink = new Writable({
+        let depth = 0;
+        let currentKey: string | undefined;
+        let inKey = false;
+
+        const headerCapture = new Transform({
             objectMode: true,
-            write: async (features: any[], _enc, cb) => {
-                sawAnyBatch = true;
-                try {
-                    await route.insert(features);
-                    cb();
-                } catch (e) {
-                    const err = e instanceof Error ? e : new Error(String(e));
-                    featuresSink.destroy(err);
-                    cb(err);
+            transform(data: any, _enc, cb) {
+                if (data.name === 'startObject' || data.name === 'startArray') {
+                    depth++;
+                } else if (data.name === 'endObject' || data.name === 'endArray') {
+                    depth--;
                 }
+
+                if (depth === 1) {
+                    if (data.name === 'startKey') {
+                        inKey = true;
+                        currentKey = '';
+                    } else if (data.name === 'endKey') {
+                        inKey = false;
+                    } else if (data.name === 'stringChunk' && inKey) {
+                        // ONLY accumulate when in key context, never value
+                        currentKey += data.value;
+                    } else if (data.name === 'stringValue') {
+                        // short primitive string value — safe, no buffering risk
+                        if (currentKey && currentKey !== 'features' && data.value !== 'FeatureCollection') {
+                            header[currentKey] = data.value;
+                            console.log(`[GeoJSON] header captured: ${entryPath} -> ${currentKey} = ${data.value}`);
+                        }
+                        currentKey = undefined;
+                    } else if (data.name === 'numberValue') {
+                        if (currentKey && currentKey !== 'features') {
+                            header[currentKey] = data.value;
+                            console.log(`[GeoJSON] header captured: ${entryPath} -> ${currentKey} = ${data.value}`);
+                        }
+                        currentKey = undefined;
+                    }
+                } else {
+                    // outside depth 1 — always reset key tracking
+                    inKey = false;
+                }
+
+                cb(null, data);
             }
         });
-        featuresChain.pipe(featuresSink);
 
-        const fork = new Fork([headerChain, featuresChain], { objectMode: true });
+        const unwrapChunk = new Transform({
+            objectMode: true,
+            transform(chunk, _enc, cb) {
+                cb(null, chunk.value);
+            }
+        });
 
-        try {
-            await pipeline(entry, chain([parser()]), fork);
-            await Promise.all([finished(headerSink), finished(featuresSink)]);
-        } catch (e) {
-            throw this.geoJsonPipeError(e);
-        }
+        const featureWriter = new Writable({
+            objectMode: true,
+            write(features: any[], _enc, cb) {
+                sawAnyBatch = true;
+                batchCount++;
+                console.log(`[GeoJSON] batch start: ${entryPath} #${batchCount} size=${features.length}`);
 
+                route.insert(features)
+                    .then(() => {
+                        console.log(`[GeoJSON] batch done: ${entryPath} #${batchCount}`);
+                        cb();
+                    })
+                    .catch(err => {
+                        console.error(`[GeoJSON] batch error: ${entryPath} #${batchCount}`, err);
+                        cb(err);
+                    });
+            },
+            final(cb) {
+                console.log(`[GeoJSON] features writable final: ${entryPath}, batches=${batchCount}`);
+                cb();
+            }
+        });
+
+        await pipeline(
+            entry,
+            // Stage 1: parse JSON tokens + capture header — all token-level transforms together
+            chain([
+                parser(),
+                headerCapture,
+            ]),
+            // Stage 2: extract features array items — pick/streamArray must stay in chain()
+            chain([
+                pick({ filter: 'features' }),
+                streamArray(),
+                unwrapChunk,
+                batch({ batchSize: environment.bulkInsertSize }),
+            ]),
+            // Stage 3: write batches
+            featureWriter
+        );
+
+        console.log(`[GeoJSON] pipeline end: ${entryPath}, sawAnyBatch=${sawAnyBatch}, batches=${batchCount}`);
         if (!sawAnyBatch) await route.insert([]);
         if (routeKind !== 'extension') {
             await route.meta();
@@ -434,7 +478,7 @@ export class ExtractLoadService {
     }
 
     public async updateAdditionalFileData(jsonData: any, col_name: string, tdei_dataset_id: string, client: PoolClient) {
-
+        console.log(`Updating additional file data for dataset ${tdei_dataset_id}, column ${col_name}`, jsonData);
         const keysToIgnore = ['features', 'type'];
         const additionalInfo: { [key: string]: any } = {};
         Object.entries(jsonData).forEach(([key, value]) => {

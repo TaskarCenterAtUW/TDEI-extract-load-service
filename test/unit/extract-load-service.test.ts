@@ -299,13 +299,13 @@ describe('ExtractLoadService', () => {
             const updateAdditionalFileData = jest.spyOn(extractLoadService, 'updateAdditionalFileData').mockResolvedValue(undefined);
             const bulkInsertEdges = jest.spyOn(extractLoadService, 'bulkInsertEdges').mockResolvedValue(undefined);
 
-            const payload = '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"id":1}}],"name":"late header","bbox":[1,2]}';
+            const payload = '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"id":1}}],"name":"late header","source":"unit-test"}';
             setImmediate(() => entry.end(payload));
 
             await (extractLoadService as any).processGeoJsonZipEntry(client, entry, 'dataset123', 'user123');
 
             expect(updateAdditionalFileData).toHaveBeenCalledWith(
-                { name: 'late header', bbox: [1, 2] },
+                { name: 'late header', source: 'unit-test' },
                 'event_info',
                 'dataset123',
                 client
@@ -337,7 +337,6 @@ describe('ExtractLoadService', () => {
                 const payload = JSON.stringify({
                     type: 'FeatureCollection',
                     name: 'edge-file',
-                    metadata: { source: 'test-suite' },
                     features: [
                         { type: 'Feature', properties: { id: 1 } },
                         { type: 'Feature', properties: { id: 2 } },
@@ -345,7 +344,7 @@ describe('ExtractLoadService', () => {
                         { type: 'Feature', properties: { id: 4 } },
                         { type: 'Feature', properties: { id: 5 } },
                     ],
-                    bbox: [10, 20, 30, 40],
+                    source: 'test-suite',
                 });
 
                 setImmediate(() => entry.end(payload));
@@ -392,8 +391,7 @@ describe('ExtractLoadService', () => {
                 expect(updateAdditionalFileData).toHaveBeenCalledWith(
                     {
                         name: 'edge-file',
-                        metadata: { source: 'test-suite' },
-                        bbox: [10, 20, 30, 40]
+                        source: 'test-suite'
                     },
                     'event_info',
                     'dataset123',
