@@ -6,18 +6,18 @@ import { PoolClient } from "pg";
 import unzipper from 'unzipper';
 import path from 'path';
 import { Readable, Transform, Writable } from 'stream';
-import { finished, pipeline } from 'stream/promises';
+import { pipeline } from 'stream/promises';
 import { chain } from 'stream-chain';
 import { parser } from 'stream-json';
 
 import { pick } from 'stream-json/filters/pick.js';
 import { streamArray } from 'stream-json/streamers/stream-array.js';
-import { streamObject } from 'stream-json/streamers/stream-object.js';
 import batch from 'stream-json/utils/batch.js';
-import Fork from 'stream-fork';
 
 
 type UnzipGeoJsonEntry = Readable & { path: string; type: string };
+
+const CHUNK_SIZE = 64 * 1024; // 64KB chunks
 
 export class ExtractLoadRequest {
     data_type!: string;
@@ -57,6 +57,19 @@ export class ExtractLoadService {
         // Stream once: insert features batch-by-batch while collecting root header pairs for the final metadata update.
         const header: Record<string, any> = {};
         let extFileId: number | undefined;
+
+        const utf8Decode = new Transform({
+            transform(chunk: Buffer, _enc, cb) {
+                // chunk could be huge from low-compression zip — split it
+                let offset = 0;
+                while (offset < chunk.length) {
+                    const slice = chunk.slice(offset, offset + CHUNK_SIZE);
+                    this.push(slice.toString('utf8'));
+                    offset += CHUNK_SIZE;
+                }
+                cb();
+            }
+        });
 
         const entryPath = entry.path ?? '';
         const routeKind =
@@ -196,6 +209,7 @@ export class ExtractLoadService {
 
         await pipeline(
             entry,
+            utf8Decode,
             // Stage 1: parse JSON tokens + capture header — all token-level transforms together
             chain([
                 parser(),
