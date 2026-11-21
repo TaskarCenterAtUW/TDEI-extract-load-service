@@ -290,6 +290,35 @@ describe('ExtractLoadService', () => {
     });
 
     describe('processGeoJsonZipEntry', () => {
+        it.each([
+            ['wsdotdataedmonds3_nodes.osw/wsdotdataedmonds3.graph.edges.geojson', 'bulkInsertEdges'],
+            ['wsdotdataedmonds3_nodes.osw/wsdotdataedmonds3.graph.nodes.geojson', 'bulkInsertNodes'],
+            ['osw.points.geojson', 'bulkInsertPoints'],
+            ['osw.lines.geojson', 'bulkInsertLines'],
+            ['osw.polygons.geojson', 'bulkInsertPolygons'],
+            ['osw.zones.geojson', 'bulkInsertZones'],
+            ['osw.nodes_v2.geojson', 'bulkInsertExtension'],
+            ['my_edges_folder/custom.geojson', 'bulkInsertExtension'],
+        ])('should route %s to %s based on file name suffix only', async (entryPath, expectedInsert) => {
+            const client = {} as any;
+            const entry: any = new PassThrough();
+            entry.type = 'File';
+            entry.path = entryPath;
+
+            jest.spyOn(extractLoadService, 'updateAdditionalFileData').mockResolvedValue(undefined);
+            jest.spyOn(extractLoadService, 'updateExtensionFileData').mockResolvedValue(1);
+            const inserts = ['bulkInsertNodes', 'bulkInsertEdges', 'bulkInsertPoints', 'bulkInsertLines', 'bulkInsertPolygons', 'bulkInsertZones', 'bulkInsertExtension']
+                .map((name) => [name, jest.spyOn(extractLoadService as any, name).mockResolvedValue(undefined)] as const);
+
+            setImmediate(() => entry.end('{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"id":1}}]}'));
+
+            await (extractLoadService as any).processGeoJsonZipEntry(client, entry, 'dataset123', 'user123');
+
+            for (const [name, spy] of inserts) {
+                expect(spy).toHaveBeenCalledTimes(name === expectedInsert ? 1 : 0);
+            }
+        });
+
         it('should collect root header fields even when they appear after features', async () => {
             const client = {} as any;
             const entry: any = new PassThrough();

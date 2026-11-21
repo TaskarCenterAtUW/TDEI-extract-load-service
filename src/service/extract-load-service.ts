@@ -71,14 +71,16 @@ export class ExtractLoadService {
             }
         });
 
+        // Classify by file name suffix only (e.g. "*.nodes.geojson"); folder names (e.g. "foo_nodes.osw/") must not influence routing
         const entryPath = entry.path ?? '';
+        const fileName = path.basename(entryPath);
         const routeKind =
-            entryPath.includes('nodes') ? 'nodes' :
-                entryPath.includes('edges') ? 'edges' :
-                    entryPath.includes('points') ? 'points' :
-                        entryPath.includes('lines') ? 'lines' :
-                            entryPath.includes('polygons') ? 'polygons' :
-                                entryPath.includes('zones') ? 'zones' :
+            fileName.endsWith('nodes.geojson') ? 'nodes' :
+                fileName.endsWith('edges.geojson') ? 'edges' :
+                    fileName.endsWith('points.geojson') ? 'points' :
+                        fileName.endsWith('lines.geojson') ? 'lines' :
+                            fileName.endsWith('polygons.geojson') ? 'polygons' :
+                                fileName.endsWith('zones.geojson') ? 'zones' :
                                     'extension';
 
         const route: {
