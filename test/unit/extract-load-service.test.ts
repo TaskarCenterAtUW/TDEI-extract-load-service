@@ -299,7 +299,7 @@ describe('ExtractLoadService', () => {
             ['osw.zones.geojson', 'bulkInsertZones'],
             ['osw.nodes_v2.geojson', 'bulkInsertExtension'],
             ['my_edges_folder/custom.geojson', 'bulkInsertExtension'],
-        ])('should route %s to %s based on file name suffix only', async (entryPath, expectedInsert) => {
+        ])('should route %s to %s by file name when the features do not settle the kind', async (entryPath, expectedInsert) => {
             const client = {} as any;
             const entry: any = new PassThrough();
             entry.type = 'File';
