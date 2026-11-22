@@ -19,6 +19,38 @@ type UnzipGeoJsonEntry = Readable & { path: string; type: string };
 
 const CHUNK_SIZE = 64 * 1024; // 64KB chunks
 
+export type RouteKind = 'nodes' | 'edges' | 'points' | 'lines' | 'polygons' | 'zones' | 'extension';
+
+// What the file name says. Same rule as the validation library: any letter case,
+// a "." before the kind unless the kind is the whole name, and an optional ".osw" before ".geojson".
+export function kindFromFileName(fileName: string): RouteKind {
+    const match = /(?:^|\.)(nodes|edges|points|lines|polygons|zones)(?:\.osw)?\.geojson$/i.exec(fileName);
+    return match ? (match[1].toLowerCase() as RouteKind) : 'extension';
+}
+
+// Tag values the OSW 0.3 schema allows only in the points file.
+const POINT_ONLY_TAGS: Record<string, string[]> = {
+    amenity: ['bench', 'waste_basket'],
+    barrier: ['bollard'],
+    emergency: ['fire_hydrant'],
+    highway: ['street_lamp'],
+    man_made: ['manhole'],
+    natural: ['tree'],
+    power: ['pole'],
+};
+
+// What the features say. Returns undefined when they do not settle it, and the caller then uses the file name.
+export function kindFromFeatures(features: any[]): RouteKind | undefined {
+    const some = (geometryType: string, test: (properties: Record<string, any>) => boolean) =>
+        features.some((f) => f?.geometry?.type === geometryType && test(f.properties ?? {}));
+
+    if (some('LineString', (p) => p._u_id !== undefined && p._v_id !== undefined)) return 'edges';
+    if (some('Polygon', (p) => p._w_id !== undefined)) return 'zones';
+    if (some('Point', (p) => p.barrier === 'kerb')) return 'nodes';
+    if (some('Point', (p) => Object.entries(POINT_ONLY_TAGS).some(([tag, values]) => values.includes(p[tag])))) return 'points';
+    return undefined;
+}
+
 export class ExtractLoadRequest {
     data_type!: string;
     tdei_dataset_id!: string;
@@ -71,23 +103,28 @@ export class ExtractLoadService {
             }
         });
 
-        // Classify by file name suffix only (e.g. "*.nodes.geojson"); folder names (e.g. "foo_nodes.osw/") must not influence routing
+        // The features decide the kind where they can; the file name decides the rest.
+        // Folder names (e.g. "foo_nodes.osw/") must not influence routing.
         const entryPath = entry.path ?? '';
-        const fileName = path.basename(entryPath);
-        const routeKind =
-            fileName.endsWith('nodes.geojson') ? 'nodes' :
-                fileName.endsWith('edges.geojson') ? 'edges' :
-                    fileName.endsWith('points.geojson') ? 'points' :
-                        fileName.endsWith('lines.geojson') ? 'lines' :
-                            fileName.endsWith('polygons.geojson') ? 'polygons' :
-                                fileName.endsWith('zones.geojson') ? 'zones' :
-                                    'extension';
+        const nameKind = kindFromFileName(path.basename(entryPath));
+        let routeKind: RouteKind | undefined; // set when the first batch of features arrives
 
-        const route: {
+        type Route = {
             meta: () => Promise<void>;
             insert: (features: any[]) => Promise<void>;
-        } = (() => {
-            switch (routeKind) {
+        };
+        let route: Route | undefined;
+        const chooseRoute = (firstBatch: any[]): Route => {
+            routeKind = kindFromFeatures(firstBatch) ?? nameKind;
+            if (routeKind !== nameKind) {
+                console.warn(`[GeoJSON] ${entryPath}: file name says ${nameKind}, features say ${routeKind}; loading as ${routeKind}`);
+            }
+            route = buildRoute(routeKind);
+            return route;
+        };
+
+        const buildRoute = (kind: RouteKind): Route => {
+            switch (kind) {
                 case 'nodes':
                     return {
                         meta: () => this.updateAdditionalFileData(header, 'node_info', tdei_dataset_id, client),
@@ -127,7 +164,7 @@ export class ExtractLoadService {
                         insert: (features) => this.bulkInsertExtension(client, tdei_dataset_id, user_id, { ...header, features }, entry, extFileId),
                     };
             }
-        })();
+        };
 
         let sawAnyBatch = false;
         let batchCount = 0;
@@ -193,7 +230,7 @@ export class ExtractLoadService {
                 batchCount++;
                 console.log(`[GeoJSON] batch start: ${entryPath} #${batchCount} size=${features.length}`);
 
-                route.insert(features)
+                (route ?? chooseRoute(features)).insert(features)
                     .then(() => {
                         console.log(`[GeoJSON] batch done: ${entryPath} #${batchCount}`);
                         cb();
@@ -229,9 +266,10 @@ export class ExtractLoadService {
         );
 
         console.log(`[GeoJSON] pipeline end: ${entryPath}, sawAnyBatch=${sawAnyBatch}, batches=${batchCount}`);
-        if (!sawAnyBatch) await route.insert([]);
+        const finalRoute = route ?? chooseRoute([]); // a file with no features is routed by its name
+        if (!sawAnyBatch) await finalRoute.insert([]);
         if (routeKind !== 'extension') {
-            await route.meta();
+            await finalRoute.meta();
         }
     }
 
